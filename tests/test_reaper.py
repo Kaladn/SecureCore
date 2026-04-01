@@ -21,7 +21,7 @@ class TestReaperConsensus(unittest.TestCase):
         self.hid = HIDSubstrate(os.path.join(self.tmpdir, "hid"))
         self.reaper = Reaper(
             decisions_substrate=self.decisions,
-            operator_substrate=self.operator,
+            operator_writer=self.operator,
             hid_substrate=self.hid,
             policy=ReaperPolicy(min_confidence=0.7, dry_run=True),
         )

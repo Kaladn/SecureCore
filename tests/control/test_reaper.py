@@ -31,7 +31,7 @@ class ReaperConsensusTests(unittest.TestCase):
 
             reaper = Reaper(
                 decisions_substrate=decisions,
-                operator_substrate=operator,
+                operator_writer=operator,
                 hid_substrate=hid,
                 policy=ReaperPolicy(min_confidence=0.7, dry_run=True),
             )
@@ -93,7 +93,7 @@ class ReaperConsensusTests(unittest.TestCase):
 
             reaper = Reaper(
                 decisions_substrate=decisions,
-                operator_substrate=operator,
+                operator_writer=operator,
                 hid_substrate=hid,
                 policy=ReaperPolicy(min_confidence=0.7, dry_run=True),
             )

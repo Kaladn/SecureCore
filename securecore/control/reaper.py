@@ -34,7 +34,6 @@ from typing import Optional
 
 from securecore.substrates.base import Substrate, SubstrateRecord
 from securecore.substrates.agent_decisions import AgentDecisionsSubstrate
-from securecore.substrates.operator import OperatorSubstrate
 from securecore.control.shun import (
     shun_ip, unshun_ip, is_shunned, PROTECTED_IPS,
 )
@@ -83,14 +82,11 @@ class Reaper:
         self,
         decisions_substrate,
         operator_writer=None,
-        operator_substrate: Optional[OperatorSubstrate] = None,
         hid_substrate: Optional[Substrate] = None,
         policy: Optional[ReaperPolicy] = None,
     ):
         self._decisions_sub = decisions_substrate
-        # Accept either a SubstrateWriter or a raw OperatorSubstrate
         self._operator_writer = operator_writer
-        self._operator_sub = operator_substrate
         self._hid_sub = hid_substrate
         self._policy = policy or ReaperPolicy()
         self._confidence_validator = ConfidenceValidator()
@@ -110,8 +106,8 @@ class Reaper:
 
     def _record_operator_action(
         self, action: str, target: str, cell_id: str = "", details: str = "",
-    ) -> None:
-        """Write to operator substrate via writer (gated) or raw substrate (legacy)."""
+    ) -> bool:
+        """Write to operator substrate via gated writer."""
         payload = {
             "action": action,
             "target": target,
@@ -119,17 +115,16 @@ class Reaper:
             "details": details,
             "metadata": {},
         }
-        if self._operator_writer is not None:
-            self._operator_writer.append(
-                record_type=f"operator:{action}",
-                payload=payload,
-                cell_id=cell_id,
-            )
-        elif self._operator_sub is not None:
-            self._operator_sub.record_action(
-                action=action, target=target, operator="reaper",
-                details=details, cell_id=cell_id,
-            )
+        if self._operator_writer is None:
+            logger.warning("REAPER OPERATOR WRITE SKIPPED: no operator_writer for %s", action)
+            return False
+
+        self._operator_writer.append(
+            record_type=f"operator:{action}",
+            payload=payload,
+            cell_id=cell_id,
+        )
+        return True
 
     def start(self) -> None:
         """Start the Reaper. Subscribe to decisions substrate."""
@@ -235,7 +230,7 @@ class Reaper:
 
         with self._lock:
             # Log BEFORE execution
-            self._record_operator_action(
+            if not self._record_operator_action(
                 "reaper_shun_execute", ip, cell_id=cell_id,
                 details=json.dumps({
                     "confidence": confidence,
@@ -243,7 +238,10 @@ class Reaper:
                     "dry_run": self._policy.dry_run,
                     "consensus": consensus,
                 }),
-            )
+            ):
+                self._actions_skipped += 1
+                logger.error("REAPER SHUN BLOCKED: operator_writer unavailable for %s", ip)
+                return
 
             # Execute
             result = shun_ip(
@@ -251,7 +249,7 @@ class Reaper:
                 reason=f"Reaper auto-shun: cell={cell_id} confidence={confidence:.2f}",
                 cell_id=cell_id,
                 escalation_level=context.get("escalation_level", 0),
-                operator_substrate=self._operator_sub,
+                operator_writer=self._operator_writer,
                 dry_run=self._policy.dry_run,
             )
 
@@ -282,7 +280,7 @@ class Reaper:
             return
 
         with self._lock:
-            self._record_operator_action(
+            if not self._record_operator_action(
                 "reaper_lock_execute", cell_id, cell_id=cell_id,
                 details=json.dumps({
                     "confidence": confidence,
@@ -290,7 +288,10 @@ class Reaper:
                     "escalation_level": context.get("escalation_level", 0),
                     "consensus": consensus,
                 }),
-            )
+            ):
+                self._actions_skipped += 1
+                logger.error("REAPER LOCK BLOCKED: operator_writer unavailable for %s", cell_id)
+                return
 
             self._cells_locked.add(cell_id)
             self._actions_taken += 1
@@ -314,7 +315,7 @@ class Reaper:
             return
 
         with self._lock:
-            self._record_operator_action(
+            if not self._record_operator_action(
                 "reaper_preserve_execute", cell_id, cell_id=cell_id,
                 details=json.dumps({
                     "confidence": confidence,
@@ -322,7 +323,10 @@ class Reaper:
                     "recommendation": "export_evidence_bundle",
                     "consensus": consensus,
                 }),
-            )
+            ):
+                self._actions_skipped += 1
+                logger.error("REAPER PRESERVE BLOCKED: operator_writer unavailable for %s", cell_id)
+                return
 
             self._actions_taken += 1
 

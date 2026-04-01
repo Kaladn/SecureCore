@@ -113,20 +113,24 @@ class ControlBus:
             reason = str(args.get("reason", "manual CLI shun"))
             if not ip:
                 return {"ok": False, "error": "ip required"}
+            if self._operator_writer is None:
+                return {"ok": False, "error": "operator_writer not configured"}
             return shun_ip(
                 ip=ip,
                 reason=reason,
-                operator_substrate=self._operator_writer or self._substrates.get("operator"),
+                operator_writer=self._operator_writer,
             )
         if command == "reaper_unshun":
             ip = str(args.get("ip", "")).strip()
             reason = str(args.get("reason", "manual CLI unshun"))
             if not ip:
                 return {"ok": False, "error": "ip required"}
+            if self._operator_writer is None:
+                return {"ok": False, "error": "operator_writer not configured"}
             return unshun_ip(
                 ip=ip,
                 reason=reason,
-                operator_substrate=self._operator_writer or self._substrates.get("operator"),
+                operator_writer=self._operator_writer,
             )
         if command == "registry_snapshot":
             return {"registry": self._registry.summary() if self._registry else {}}
