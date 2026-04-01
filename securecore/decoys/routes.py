@@ -50,6 +50,40 @@ def init_trap_routes(ingress_sub, mirror_sub, evidence_sub, telemetry_sub, log_r
     _log_router = log_router
 
 
+def _current_fingerprint() -> tuple[str, dict, str, str]:
+    headers = dict(request.headers)
+    source_ip = request.remote_addr or "unknown"
+    user_agent = headers.get("User-Agent", headers.get("user-agent", ""))
+    accept_lang = headers.get("Accept-Language", headers.get("accept-language", ""))
+    accept_enc = headers.get("Accept-Encoding", headers.get("accept-encoding", ""))
+    fingerprint = compute_attacker_fingerprint(source_ip, user_agent, accept_lang, accept_enc)
+    return fingerprint, headers, source_ip, user_agent
+
+
+def _ensure_cell(path: str = "") -> tuple[str, dict]:
+    fingerprint, _, source_ip, user_agent = _current_fingerprint()
+    cell_id = _cells_by_fingerprint.get(fingerprint)
+    if not cell_id:
+        cell_id = hashlib.sha256(f"{fingerprint}:{time.time()}".encode()).hexdigest()[:16]
+        _cells_by_fingerprint[fingerprint] = cell_id
+        _cells[cell_id] = {
+            "fingerprint": fingerprint,
+            "source_ip": source_ip,
+            "interaction_count": 0,
+            "escalation_level": 0,
+            "created_at": time.time(),
+        }
+        if _mirror_sub:
+            _mirror_sub.record_cell_created(
+                cell_id=cell_id,
+                attacker_fingerprint=fingerprint,
+                source_ip=source_ip,
+                user_agent=user_agent,
+                trigger_path=path or request.path,
+            )
+    return cell_id, _cells[cell_id]
+
+
 def _process_trap_request(decoy_content: str, content_type: str, status_code: int = 200) -> Response:
     """Universal trap request processor. Feeds all substrates."""
     start = time.time()
@@ -69,25 +103,7 @@ def _process_trap_request(decoy_content: str, content_type: str, status_code: in
     tool_sig = fingerprint_request(headers)
 
     # Get or create cell
-    cell_id = _cells_by_fingerprint.get(fingerprint)
-    if not cell_id:
-        cell_id = hashlib.sha256(f"{fingerprint}:{time.time()}".encode()).hexdigest()[:16]
-        _cells_by_fingerprint[fingerprint] = cell_id
-        _cells[cell_id] = {
-            "fingerprint": fingerprint,
-            "source_ip": source_ip,
-            "interaction_count": 0,
-            "escalation_level": 0,
-            "created_at": time.time(),
-        }
-        # Record cell creation in mirror substrate
-        if _mirror_sub:
-            _mirror_sub.record_cell_created(
-                cell_id=cell_id, attacker_fingerprint=fingerprint,
-                source_ip=source_ip, user_agent=ua, trigger_path=path,
-            )
-
-    cell = _cells[cell_id]
+    cell_id, cell = _ensure_cell(path)
     cell["interaction_count"] += 1
     cell["last_seen"] = time.time()
 
@@ -112,8 +128,9 @@ def _process_trap_request(decoy_content: str, content_type: str, status_code: in
         )
 
     # 3. Record forensic evidence
+    evidence_record = None
     if _evidence_sub:
-        _evidence_sub.record_evidence(
+        evidence_record = _evidence_sub.record_evidence(
             cell_id=cell_id, evidence_type=_classify_path(path, method),
             method=method, path=path, headers=headers, body=body,
             source_ip=source_ip, source_port=source_port,
@@ -142,7 +159,9 @@ def _process_trap_request(decoy_content: str, content_type: str, status_code: in
         _log_router.log(forensic_entry(
             cell_id=cell_id, evidence_type=_classify_path(path, method),
             method=method, path=path, source_ip=source_ip,
-            tool_signature=tool_sig, chain_hash="", sequence=0,
+            tool_signature=tool_sig,
+            chain_hash=evidence_record.chain_hash if evidence_record else "",
+            sequence=evidence_record.sequence if evidence_record else 0,
         ))
 
     return Response(decoy_content, status=status_code, content_type=content_type)
@@ -186,34 +205,22 @@ def _classify_path(path: str, method: str) -> str:
 @trap_bp.route("/phpmyadmin", methods=["GET", "HEAD"])
 @trap_bp.route("/phpmyadmin/", methods=["GET", "HEAD"])
 def admin_panel_trap():
-    fp = _cells_by_fingerprint.get(
-        compute_attacker_fingerprint(
-            request.remote_addr or "",
-            request.headers.get("User-Agent", ""),
-            request.headers.get("Accept-Language", ""),
-            request.headers.get("Accept-Encoding", ""),
-        ), "default"
-    )
-    return _process_trap_request(fake_admin_panel(fp), "text/html")
+    cell_id, _ = _ensure_cell(request.path)
+    return _process_trap_request(fake_admin_panel(cell_id), "text/html")
 
 
 @trap_bp.route("/admin/authenticate", methods=["POST"])
 @trap_bp.route("/admin/login", methods=["POST"])
 @trap_bp.route("/wp-login.php", methods=["POST"])
 def admin_login_trap():
-    fp = _cells_by_fingerprint.get(
-        compute_attacker_fingerprint(
-            request.remote_addr or "",
-            request.headers.get("User-Agent", ""),
-        ), "default"
-    )
+    cell_id, _ = _ensure_cell(request.path)
     username = "admin"
     if request.is_json:
         data = request.get_json(silent=True) or {}
         username = data.get("username", "admin")
     else:
         username = request.form.get("username", "admin")
-    content = json.dumps(fake_login_success(fp, username))
+    content = json.dumps(fake_login_success(cell_id, username))
     return _process_trap_request(content, "application/json")
 
 
@@ -342,10 +349,5 @@ def generic_probe_trap():
 
 
 def _get_cell_id() -> str:
-    fp = compute_attacker_fingerprint(
-        request.remote_addr or "",
-        request.headers.get("User-Agent", ""),
-        request.headers.get("Accept-Language", ""),
-        request.headers.get("Accept-Encoding", ""),
-    )
-    return _cells_by_fingerprint.get(fp, "default")
+    cell_id, _ = _ensure_cell(request.path)
+    return cell_id

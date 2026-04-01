@@ -9,8 +9,8 @@ from securecore.core.models import Role, User
 
 
 def main() -> None:
-    username = os.getenv("SECURITY_LOCAL_ADMIN_USER", "admin")
-    password = os.getenv("SECURITY_LOCAL_ADMIN_PASS", "change-this-now")
+    username = os.getenv("SECURECORE_ADMIN_USER", "admin")
+    password = os.getenv("SECURECORE_ADMIN_PASS", "change-this-now")
 
     with app.app_context():
         admin_role = Role.query.filter_by(name="admin").first()

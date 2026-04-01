@@ -61,6 +61,10 @@ def dashboard():
     if _log_router:
         data["log_streams"] = _log_router.stats()
 
+    hid_sub = _substrates.get("hid")
+    if hid_sub and hasattr(hid_sub, "get_recent_attestation"):
+        data["hid"] = hid_sub.get_recent_attestation()
+
     return jsonify({"ok": True, "data": data})
 
 
@@ -111,6 +115,17 @@ def substrate_tail(name: str):
         "count": len(records),
         "records": [r.to_dict() for r in records],
     })
+
+
+@control_bp.get("/api/control/hid")
+@jwt_required()
+@role_required("admin")
+def hid_status():
+    """Latest human-input-device attestation snapshot."""
+    hid_sub = _substrates.get("hid")
+    if not hid_sub or not hasattr(hid_sub, "get_recent_attestation"):
+        return jsonify({"ok": False, "error": "hid substrate not available"}), 500
+    return jsonify({"ok": True, "hid": hid_sub.get_recent_attestation()})
 
 
 # ============================================================

@@ -38,6 +38,7 @@ from securecore.substrates.operator import OperatorSubstrate
 from securecore.control.shun import (
     shun_ip, unshun_ip, is_shunned, PROTECTED_IPS,
 )
+from securecore.validators.confidence import ConfidenceSignal, ConfidenceValidator
 
 logger = logging.getLogger("control.reaper")
 
@@ -82,11 +83,14 @@ class Reaper:
         self,
         decisions_substrate: AgentDecisionsSubstrate,
         operator_substrate: OperatorSubstrate,
+        hid_substrate: Optional[Substrate] = None,
         policy: Optional[ReaperPolicy] = None,
     ):
         self._decisions_sub = decisions_substrate
         self._operator_sub = operator_substrate
+        self._hid_sub = hid_substrate
         self._policy = policy or ReaperPolicy()
+        self._confidence_validator = ConfidenceValidator()
         self._lock = threading.Lock()
         self._running = False
         self._paused = False
@@ -97,6 +101,9 @@ class Reaper:
         self._actions_skipped: int = 0
         self._cells_locked: set[str] = set()
         self._ips_shunned: set[str] = set()
+        self._last_consensus: dict = {}
+        # Cache latest cognitive assessment per cell (avoids full JSONL scan)
+        self._cognitive_cache: dict[str, dict] = {}
 
     def start(self) -> None:
         """Start the Reaper. Subscribe to decisions substrate."""
@@ -156,6 +163,10 @@ class Reaper:
         agent_name = payload.get("agent_name", "")
         decision_type = payload.get("decision_type", "")
 
+        # Cache cognitive assessments as they arrive (avoids JSONL scan later)
+        if agent_name == "cognitive" and decision_type == "cognitive_assessment" and record.cell_id:
+            self._cognitive_cache[record.cell_id] = payload.get("context", {})
+
         # Only act on containment agent decisions
         if agent_name != "containment":
             return
@@ -198,6 +209,25 @@ class Reaper:
         if is_shunned(ip):
             return  # already shunned
 
+        consensus = self._build_consensus(cell_id, context, confidence)
+        self._last_consensus = consensus
+        if not consensus.get("actionable"):
+            self._actions_skipped += 1
+            self._operator_sub.record_action(
+                action="reaper_shun_skip",
+                target=ip,
+                operator="reaper",
+                cell_id=cell_id,
+                details=json.dumps(consensus),
+            )
+            logger.info(
+                "REAPER SKIP: consensus %.2f tier=%s for %s",
+                consensus.get("score", 0.0),
+                consensus.get("tier", "reject"),
+                ip,
+            )
+            return
+
         with self._lock:
             # Log BEFORE execution
             self._operator_sub.record_action(
@@ -209,6 +239,7 @@ class Reaper:
                     "confidence": confidence,
                     "escalation_level": context.get("escalation_level", 0),
                     "dry_run": self._policy.dry_run,
+                    "consensus": consensus,
                 }),
             )
 
@@ -241,6 +272,19 @@ class Reaper:
         if cell_id in self._cells_locked:
             return  # already locked
 
+        consensus = self._build_consensus(cell_id, context, confidence)
+        self._last_consensus = consensus
+        if not consensus.get("actionable"):
+            self._actions_skipped += 1
+            self._operator_sub.record_action(
+                action="reaper_lock_skip",
+                target=cell_id,
+                operator="reaper",
+                cell_id=cell_id,
+                details=json.dumps(consensus),
+            )
+            return
+
         with self._lock:
             self._operator_sub.record_action(
                 action="reaper_lock_execute",
@@ -251,6 +295,7 @@ class Reaper:
                     "confidence": confidence,
                     "source_ip": context.get("source_ip", ""),
                     "escalation_level": context.get("escalation_level", 0),
+                    "consensus": consensus,
                 }),
             )
 
@@ -258,14 +303,27 @@ class Reaper:
             self._actions_taken += 1
 
             logger.warning(
-                "REAPER LOCK: cell=%s ip=%s confidence=%.2f",
-                cell_id, context.get("source_ip", ""), confidence,
+                "REAPER LOCK: cell=%s ip=%s confidence=%.2f consensus=%.2f",
+                cell_id, context.get("source_ip", ""), confidence, consensus.get("score", 0.0),
             )
 
     def _execute_preserve(self, cell_id: str, context: dict, confidence: float) -> None:
         """Execute evidence preservation."""
         if not self._policy.auto_preserve_enabled:
             self._actions_skipped += 1
+            return
+
+        consensus = self._build_consensus(cell_id, context, confidence)
+        self._last_consensus = consensus
+        if not consensus.get("actionable"):
+            self._actions_skipped += 1
+            self._operator_sub.record_action(
+                action="reaper_preserve_skip",
+                target=cell_id,
+                operator="reaper",
+                cell_id=cell_id,
+                details=json.dumps(consensus),
+            )
             return
 
         with self._lock:
@@ -278,15 +336,87 @@ class Reaper:
                     "confidence": confidence,
                     "source_ip": context.get("source_ip", ""),
                     "recommendation": "export_evidence_bundle",
+                    "consensus": consensus,
                 }),
             )
 
             self._actions_taken += 1
 
             logger.warning(
-                "REAPER PRESERVE: cell=%s - evidence bundle flagged for export",
-                cell_id,
+                "REAPER PRESERVE: cell=%s consensus=%.2f - evidence bundle flagged",
+                cell_id, consensus.get("score", 0.0),
             )
+
+    def _build_consensus(self, cell_id: str, context: dict, containment_confidence: float) -> dict:
+        cognitive = self._latest_cognitive_assessment(cell_id)
+        hid = self._latest_hid_attestation()
+
+        signals = [
+            ConfidenceSignal(
+                name="containment",
+                score=containment_confidence,
+                weight=0.40,
+                details={
+                    "source_ip": context.get("ip", context.get("source_ip", "")),
+                    "escalation_level": context.get("escalation_level", 0),
+                },
+            )
+        ]
+
+        if cognitive:
+            cognitive_score = max(
+                cognitive.get("confidence", 0.0),
+                cognitive.get("threat_score", 0.0),
+            )
+            signals.append(
+                ConfidenceSignal(
+                    name="cognitive",
+                    score=cognitive_score,
+                    weight=0.35,
+                    details={
+                        "human_likelihood": cognitive.get("human_likelihood", 0.0),
+                        "threat_score": cognitive.get("threat_score", 0.0),
+                        "consensus_strength": cognitive.get("consensus_strength", 0.0),
+                    },
+                )
+            )
+
+        # HID as a real weighted signal, not just a snapshot
+        hid_confidence = hid.get("confidence", 0.0)
+        # Invert: high human confidence LOWERS threat score (human at keyboard = less likely attack)
+        # No human activity RAISES threat score (autonomous attack)
+        hid_threat_signal = 1.0 - hid_confidence if hid.get("available") else 0.5
+        signals.append(
+            ConfidenceSignal(
+                name="hid",
+                score=hid_threat_signal,
+                weight=0.25,
+                present=True,
+                details={
+                    "active_human": hid.get("active_human", False),
+                    "raw_confidence": hid_confidence,
+                    "available": hid.get("available", False),
+                },
+            )
+        )
+
+        assessment = self._confidence_validator.assess(signals)
+        actionable = assessment.actionable and assessment.score >= self._policy.min_confidence
+
+        return {
+            "score": round(assessment.score, 3),
+            "tier": assessment.tier,
+            "actionable": actionable,
+            "contributors": assessment.contributors,
+        }
+
+    def _latest_cognitive_assessment(self, cell_id: str) -> dict:
+        return self._cognitive_cache.get(cell_id, {})
+
+    def _latest_hid_attestation(self) -> dict:
+        if not self._hid_sub or not hasattr(self._hid_sub, "get_recent_attestation"):
+            return {"available": False, "active_human": False, "confidence": 0.0}
+        return self._hid_sub.get_recent_attestation()
 
     def replay(self, since_sequence: int = 0) -> dict:
         """Replay historical decisions through the Reaper.
@@ -314,6 +444,7 @@ class Reaper:
             "ips_shunned": sorted(self._ips_shunned),
             "cells_locked": sorted(self._cells_locked),
             "policy": self._policy.to_dict(),
+            "last_consensus": self._last_consensus,
         }
 
     @property

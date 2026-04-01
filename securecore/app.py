@@ -32,6 +32,7 @@ from securecore.substrates.evidence import EvidenceSubstrate
 from securecore.substrates.telemetry import TelemetrySubstrate
 from securecore.substrates.agent_decisions import AgentDecisionsSubstrate
 from securecore.substrates.operator import OperatorSubstrate
+from securecore.substrates.hid import HIDSubstrate
 
 # Agents
 from securecore.agents.watcher import WatcherAgent
@@ -40,6 +41,7 @@ from securecore.agents.escalation import EscalationAgent
 from securecore.agents.decoy_orchestrator import DecoyOrchestratorAgent
 from securecore.agents.chain_auditor import ChainAuditorAgent
 from securecore.agents.containment import ContainmentAdvisorAgent
+from securecore.agents.cognitive import CognitiveAgent
 
 # Control
 from securecore.control.reaper import Reaper, ReaperPolicy
@@ -98,6 +100,7 @@ def create_app() -> Flask:
         "telemetry": TelemetrySubstrate(os.path.join(data_dir, "substrates")),
         "agent_decisions": AgentDecisionsSubstrate(os.path.join(data_dir, "substrates")),
         "operator": OperatorSubstrate(os.path.join(data_dir, "substrates")),
+        "hid": HIDSubstrate(os.path.join(data_dir, "substrates")),
     }
 
     # ============================================================
@@ -143,6 +146,13 @@ def create_app() -> Flask:
     )
     agents["chain_auditor"] = chain_auditor
 
+    # Cognitive: multi-anchor authenticity and threat assessment
+    cognitive = CognitiveAgent(agent_decisions_sub, hid_substrate=substrates["hid"])
+    cognitive.watch(substrates["ingress"])
+    cognitive.watch(substrates["mirror"])
+    cognitive.watch(substrates["hid"])
+    agents["cognitive"] = cognitive
+
     # Containment Advisor: watches escalation decisions, recommends actions
     containment = ContainmentAdvisorAgent(agent_decisions_sub)
     containment.watch(agent_decisions_sub)
@@ -165,6 +175,22 @@ def create_app() -> Flask:
     app.register_blueprint(auth_bp)
     app.register_blueprint(events_bp)
 
+    # ============================================================
+    # REAPER - autonomous containment executor
+    # ============================================================
+    reaper = Reaper(
+        decisions_substrate=agent_decisions_sub,
+        operator_substrate=substrates["operator"],
+        hid_substrate=substrates["hid"],
+        policy=ReaperPolicy(
+            min_confidence=0.7,
+            shun_cooldown_seconds=300.0,
+            auto_shun_enabled=True,
+            dry_run=False,
+        ),
+    )
+    reaper.start()
+
     # Control plane routes
     init_control_routes(substrates, agents, log_router, reaper)
     app.register_blueprint(control_bp)
@@ -180,21 +206,6 @@ def create_app() -> Flask:
             log_router=log_router,
         )
         app.register_blueprint(trap_bp)
-
-    # ============================================================
-    # REAPER - autonomous containment executor
-    # ============================================================
-    reaper = Reaper(
-        decisions_substrate=agent_decisions_sub,
-        operator_substrate=substrates["operator"],
-        policy=ReaperPolicy(
-            min_confidence=0.7,
-            shun_cooldown_seconds=300.0,
-            auto_shun_enabled=True,
-            dry_run=False,
-        ),
-    )
-    reaper.start()
 
     # Store references on app for CLI access
     app.substrates = substrates
