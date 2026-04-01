@@ -215,13 +215,16 @@ def _doctor() -> None:
     # Get all known CLI commands from the parser
     from securecore.cli.main import _build_parser
     parser = _build_parser()
-    known_commands = set()
+    known_commands = {}
     if hasattr(parser, "_subparsers"):
         for action in parser._subparsers._actions:
-            if hasattr(action, "_parser_class"):
-                continue
             if hasattr(action, "choices") and action.choices:
-                known_commands.update(action.choices.keys())
+                for subcmd, subparser in action.choices.items():
+                    known_commands[subcmd] = {
+                        option
+                        for sub_action in subparser._actions
+                        for option in sub_action.option_strings
+                    }
 
     command_issues = 0
     for help_id in [e["help_id"] for e in corpus.list_ids()]:
@@ -237,6 +240,18 @@ def _doctor() -> None:
                 print(f"    {_colorize('MISSING', 'red')}  {help_id} -> {cmd}")
                 warnings.append(f"command ref '{cmd}' in {help_id} not found in CLI parser")
                 command_issues += 1
+                continue
+
+            if subcmd in known_commands:
+                known_flags = known_commands[subcmd]
+                invalid_flags = [
+                    token for token in parts[2:]
+                    if token.startswith("-") and token not in known_flags
+                ]
+                for flag in invalid_flags:
+                    print(f"    {_colorize('INVALID', 'red')}  {help_id} -> {cmd}  (unknown flag: {flag})")
+                    warnings.append(f"command ref '{cmd}' in {help_id} uses unknown flag {flag}")
+                    command_issues += 1
     if command_issues == 0:
         print(f"    {_colorize('all command refs valid', 'green')}")
     print()
