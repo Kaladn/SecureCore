@@ -181,18 +181,25 @@ def _chat(question: str) -> None:
     try:
         from securecore.help.config import load_help_config
         from securecore.llm.broker import LLMBroker
-        from securecore.help.bot import HelpBot, SYSTEM_PROMPT
+        from securecore.help.bot import HelpBot
 
         config = load_help_config()
         broker = LLMBroker(ollama_host=config["ollama_host"])
+        from securecore.cli.common import request_live_command
         from securecore.help.bot import _load_system_prompt
         prompt = _load_system_prompt(config)
+        snapshot = request_live_command("registry_snapshot") or {}
+        callers = snapshot.get("registry", {}).get("callers", {})
+        caller_entry = callers.get("llm:help")
+        if not caller_entry:
+            print(f"\n  {_colorize('Help bot unavailable: live llm:help caller not registered.', 'yellow')}")
+            print(f"  Start SecureCore to use registry-backed help chat.\n")
+            return
         broker.register_role(
             role_name="help",
-            caller_id="llm:help",
+            caller_entry=caller_entry,
             model=config["help_model"],
             system_prompt=prompt,
-            allowed_reads=["help_corpus", "code_index", "runtime_snapshot"],
             max_context_chars=config["max_context_chars"],
         )
         bot = HelpBot(broker)
