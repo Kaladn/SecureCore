@@ -1,4 +1,4 @@
-"""Help command — four-tier help system with grounded chat bot.
+"""Help command — reference help over corpus and code index.
 
 Usage:
     securecore help                         top-level nav
@@ -6,14 +6,12 @@ Usage:
     securecore help show <help_id>          show help entry (default tier 1)
     securecore help show <help_id> --tier 3 explicit tier
     securecore help where <symbol>          code/file mapping
-    securecore help chat "question"         grounded LLM chat (tier 4)
     securecore help doctor                  check for stale index / missing content
     securecore help sync                    rebuild code mirror index
 """
 
 from __future__ import annotations
 
-import json
 import sys
 
 
@@ -34,8 +32,6 @@ def run(action: str, query: str, tier: int) -> None:
         _show(query, tier)
     elif action == "where" and query:
         _where(query)
-    elif action == "chat" and query:
-        _chat(query)
     elif action == "doctor":
         _doctor()
     elif action == "sync":
@@ -57,7 +53,6 @@ def _nav() -> None:
     print(f"    {'help search <query>':35s}  search help + code")
     print(f"    {'help show <id> [--tier N]':35s}  show help entry at tier 1/2/3")
     print(f"    {'help where <symbol>':35s}  find code location")
-    print(f"    {'help chat \"question\"':35s}  ask the help bot (tier 4)")
     print(f"    {'help doctor':35s}  check index health")
     print(f"    {'help sync':35s}  rebuild code mirror")
     print()
@@ -177,64 +172,6 @@ def _where(query: str) -> None:
     print()
 
 
-def _chat(question: str) -> None:
-    try:
-        from securecore.help.config import load_help_config
-        from securecore.llm.broker import LLMBroker
-        from securecore.help.bot import HelpBot
-
-        config = load_help_config()
-        broker = LLMBroker(ollama_host=config["ollama_host"])
-        from securecore.cli.common import request_live_command
-        from securecore.help.bot import _load_system_prompt
-        prompt = _load_system_prompt(config)
-        snapshot = request_live_command("registry_snapshot") or {}
-        callers = snapshot.get("registry", {}).get("callers", {})
-        caller_entry = callers.get("llm:help")
-        if not caller_entry:
-            print(f"\n  {_colorize('Help bot unavailable: live llm:help caller not registered.', 'yellow')}")
-            print(f"  Start SecureCore to use registry-backed help chat.\n")
-            return
-        broker.register_role(
-            role_name="help",
-            caller_entry=caller_entry,
-            model=config["help_model"],
-            system_prompt=prompt,
-            max_context_chars=config["max_context_chars"],
-        )
-        bot = HelpBot(broker)
-        print()
-        print(_colorize("  HELP BOT (tier 4)", "bold"))
-        print(_colorize("  " + "-" * 50, "dim"))
-        print()
-
-        result = bot.ask(question)
-
-        # Render structured response
-        print(f"  {result['answer']}")
-
-        if result.get("basis"):
-            print(f"\n  {_colorize('Basis:', 'cyan')} {', '.join(result['basis'])}")
-        if result.get("file_refs"):
-            print(f"  {_colorize('Files:', 'cyan')} {', '.join(result['file_refs'])}")
-        if result.get("commands"):
-            print(f"  {_colorize('Commands:', 'cyan')} {', '.join(result['commands'])}")
-        if result.get("unknowns"):
-            print(f"  {_colorize('Unknown:', 'yellow')} {', '.join(result['unknowns'])}")
-
-        print()
-        structured_tag = "structured" if result.get("structured") else "freeform"
-        print(_colorize(f"  Sources: corpus={result['sources']['corpus_hits']} "
-                        f"code={result['sources']['code_hits']} "
-                        f"runtime={'yes' if result['sources']['runtime_included'] else 'no'} "
-                        f"model={result['model']} format={structured_tag}", "dim"))
-        print()
-    except Exception as exc:
-        print(f"\n  {_colorize(f'Help bot unavailable: {exc}', 'yellow')}")
-        print(f"  Is ollama running? Try: ollama serve")
-        print(f"  Is the model loaded? Try: ollama pull gpt-oss:20b\n")
-
-
 def _doctor() -> None:
     from securecore.help.corpus import HelpCorpus
     from securecore.help.code_index import CodeMirrorIndex
@@ -326,43 +263,6 @@ def _doctor() -> None:
                     file_issues += 1
     if file_issues == 0:
         print(f"    {_colorize('all file refs valid', 'green')}")
-    print()
-
-    # 5. Verify LLM roles align with registry
-    print(_colorize("  LLM ROLES", "cyan"))
-    from securecore.cli.common import request_live_command
-    registry_result = request_live_command("registry_snapshot") or {}
-    registry_callers = registry_result.get("registry", {}).get("callers", {})
-    llm_roles = ["llm:help", "llm:draft", "llm:analyze"]
-    for role_id in llm_roles:
-        if role_id in registry_callers:
-            entry = registry_callers[role_id]
-            writes = entry.get("allowed_write", [])
-            write_tag = _colorize("read-only", "green") if not writes else _colorize(f"writes={writes}", "red")
-            print(f"    {role_id:15s}  {write_tag}")
-        else:
-            print(f"    {role_id:15s}  {_colorize('NOT IN REGISTRY', 'yellow')}  (start organism to verify)")
-    print()
-
-    # 6. Check model availability
-    print(_colorize("  MODEL", "cyan"))
-    try:
-        from securecore.help.config import load_help_config
-        cfg = load_help_config()
-        from securecore.llm.adapters.ollama import OllamaAdapter
-        adapter = OllamaAdapter(host=cfg["ollama_host"], model=cfg["help_model"])
-        available = adapter.is_available()
-        digest = adapter.model_digest()
-        model_status = _colorize("AVAILABLE", "green") if available else _colorize("NOT AVAILABLE", "yellow")
-        print(f"    model:      {cfg['help_model']}")
-        print(f"    status:     {model_status}")
-        if digest:
-            print(f"    digest:     {digest[:16]}")
-        if not available:
-            warnings.append(f"model {cfg['help_model']} not available via ollama")
-    except Exception as exc:
-        print(f"    {_colorize(f'check failed: {exc}', 'yellow')}")
-        warnings.append(f"model check failed: {exc}")
     print()
 
     # Summary

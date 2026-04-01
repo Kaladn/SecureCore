@@ -67,7 +67,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # help
     help_p = sub.add_parser("help", help="four-tier help system")
-    help_p.add_argument("action", nargs="?", default="", help="search|show|where|chat|doctor|sync")
+    help_p.add_argument("action", nargs="?", default="", help="search|show|where|doctor|sync")
     help_p.add_argument("query", nargs="?", default="", help="search query, help_id, symbol, or question")
     help_p.add_argument("--tier", type=int, default=1, help="tier level for show (1/2/3)")
 
