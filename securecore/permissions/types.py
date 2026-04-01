@@ -133,10 +133,9 @@ class SubstrateWriter:
             return attr
 
         def _gated_call(*args, **kwargs):
-            token = WriteToken(
+            token = WriteToken.delegated(
                 caller_id=self._caller_id,
                 record_type=name,
-                payload={},
                 signing_key=self._signing_key,
             )
             self._substrate.set_active_token(token)

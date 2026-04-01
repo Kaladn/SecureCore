@@ -36,6 +36,8 @@ from securecore.permissions.registry import (
 
 logger = logging.getLogger("permissions.gate")
 
+DELEGATED_PAYLOAD_HASH = "DELEGATED"
+
 
 class PermissionDenied(Exception):
     """Raised when a write is denied by the permission gate."""
@@ -60,14 +62,19 @@ class WriteToken:
         self,
         caller_id: str,
         record_type: str,
-        payload: dict,
+        payload: dict | None,
         signing_key: bytes,
+        payload_hash: str | None = None,
     ):
         self.caller_id = caller_id
         self.record_type = record_type
-        self.payload_hash = hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        if payload_hash is None:
+            if payload is None:
+                raise ValueError("payload is required unless payload_hash is provided")
+            payload_hash = hashlib.sha256(
+                json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+        self.payload_hash = payload_hash
         self.timestamp = datetime.now(UTC).isoformat()
         self.nonce = uuid.uuid4().hex
         self.signature = sign_record(
@@ -77,6 +84,16 @@ class WriteToken:
             payload_hash=self.payload_hash,
             timestamp=self.timestamp,
             nonce=self.nonce,
+        )
+
+    @classmethod
+    def delegated(cls, caller_id: str, record_type: str, signing_key: bytes) -> "WriteToken":
+        return cls(
+            caller_id=caller_id,
+            record_type=record_type,
+            payload=None,
+            signing_key=signing_key,
+            payload_hash=DELEGATED_PAYLOAD_HASH,
         )
 
 
@@ -98,7 +115,7 @@ class PermissionGate:
         matches the real payload being written (prevents token reuse with
         different data). For delegated substrate methods where the payload
         is built internally, actual_payload may be None — identity and
-        ACL are still verified.
+        ACL are still verified, but payload binding is not claimed.
 
         Raises PermissionDenied on failure.
         """

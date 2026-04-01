@@ -8,7 +8,12 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from securecore.permissions.registry import CallerRegistry
-from securecore.permissions.gate import PermissionGate, PermissionDenied, WriteToken
+from securecore.permissions.gate import (
+    DELEGATED_PAYLOAD_HASH,
+    PermissionGate,
+    PermissionDenied,
+    WriteToken,
+)
 from securecore.substrates.ingress import IngressSubstrate
 from securecore.substrates.agent_decisions import AgentDecisionsSubstrate
 from securecore.permissions.types import SubstrateWriter
@@ -20,6 +25,20 @@ VALID_INGRESS = {
     "method": "GET",
     "path": "/.env",
 }
+
+
+class _CapturingIngressSubstrate(IngressSubstrate):
+    def __init__(self, data_dir: str):
+        super().__init__(data_dir)
+        self.captured_payload_hash = None
+
+    def record_captured_request(self):
+        token = getattr(self._token_local, "active_token", None)
+        self.captured_payload_hash = token.payload_hash if token else None
+        return self.append(
+            record_type="http_request",
+            payload=dict(VALID_INGRESS),
+        )
 
 
 class TestPermissionGate(unittest.TestCase):
@@ -184,6 +203,18 @@ class TestPermissionGate(unittest.TestCase):
         )
         self.assertEqual(record.payload["_caller_id"], "routes:traps")
         self.assertEqual(record.payload["source_ip"], "1.2.3.4")
+
+    def test_delegated_writes_use_explicit_delegated_marker(self):
+        """Delegated writer calls are identity-bound only and marked explicitly."""
+        capturing = _CapturingIngressSubstrate(os.path.join(self.tmpdir, "capturing"))
+        capturing.set_permission_gate(self.gate)
+        writer = SubstrateWriter(capturing, "routes:traps", self.trap_entry.signing_key)
+
+        record = writer.record_captured_request()
+
+        self.assertEqual(capturing.captured_payload_hash, DELEGATED_PAYLOAD_HASH)
+        self.assertEqual(record.payload["_caller_id"], "routes:traps")
+        self.assertEqual(record.payload["path"], "/.env")
 
     def test_denial_log_accessible(self):
         """Gate maintains a denial log."""
