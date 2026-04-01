@@ -128,6 +128,8 @@ class Substrate:
         self._last_hash = "GENESIS"
         self._lock = threading.Lock()
         self._subscribers: list = []
+        self._permission_gate = None
+        self._active_token = None
         self._forge_writer = None
         self._forge_failures = 0
         self._forge_strict = os.getenv("SECURECORE_FORGE_STRICT", "false").lower() == "true"
@@ -171,6 +173,23 @@ class Substrate:
             except json.JSONDecodeError:
                 pass
 
+    def set_permission_gate(self, gate) -> None:
+        """Set the permission gate. Called by the app factory after registration."""
+        self._permission_gate = gate
+
+    def set_active_token(self, token) -> None:
+        """Set a write token for the current caller context.
+
+        When substrate-specific methods (record_request, record_evidence, etc.)
+        call self.append() internally, they don't have a write_token parameter.
+        A SubstrateWriter sets the active token before delegating to these methods,
+        so the gate can still verify the caller.
+        """
+        self._active_token = token
+
+    def clear_active_token(self) -> None:
+        self._active_token = None
+
     def validate_payload(self, record_type: str, payload: dict) -> None:
         """Override in subclasses to enforce schema.
 
@@ -183,15 +202,35 @@ class Substrate:
         record_type: str,
         payload: dict,
         cell_id: str = "",
+        write_token=None,
     ) -> SubstrateRecord:
         """Append a record to this substrate.
 
         Thread-safe. Writes to JSONL first (truth), then notifies subscribers.
-        Returns the created record.
+
+        If a permission gate is set, write_token is REQUIRED and must pass
+        all gate checks (registered, ACL, valid signature). Denied writes
+        raise PermissionDenied.
         """
+        # Permission enforcement FIRST — the single chokepoint
+        # Deny before schema validation so unauthorized callers
+        # get "denied", not "invalid payload"
+        verified_caller = ""
+        if self._permission_gate is not None:
+            effective_token = write_token or getattr(self, "_active_token", None)
+            if effective_token is None:
+                from securecore.permissions.gate import PermissionDenied
+                raise PermissionDenied("anonymous", self.name, "no write_token provided")
+            verified_caller = self._permission_gate.check(self.name, effective_token)
+
         self.validate_payload(record_type, payload)
 
         with self._lock:
+            # Embed verified caller identity in payload (immutable proof)
+            if verified_caller:
+                payload = dict(payload)
+                payload["_caller_id"] = verified_caller
+
             record = SubstrateRecord(
                 substrate=self.name,
                 sequence=self._sequence,

@@ -81,12 +81,15 @@ class Reaper:
 
     def __init__(
         self,
-        decisions_substrate: AgentDecisionsSubstrate,
-        operator_substrate: OperatorSubstrate,
+        decisions_substrate,
+        operator_writer=None,
+        operator_substrate: Optional[OperatorSubstrate] = None,
         hid_substrate: Optional[Substrate] = None,
         policy: Optional[ReaperPolicy] = None,
     ):
         self._decisions_sub = decisions_substrate
+        # Accept either a SubstrateWriter or a raw OperatorSubstrate
+        self._operator_writer = operator_writer
         self._operator_sub = operator_substrate
         self._hid_sub = hid_substrate
         self._policy = policy or ReaperPolicy()
@@ -105,18 +108,36 @@ class Reaper:
         # Cache latest cognitive assessment per cell (avoids full JSONL scan)
         self._cognitive_cache: dict[str, dict] = {}
 
+    def _record_operator_action(
+        self, action: str, target: str, cell_id: str = "", details: str = "",
+    ) -> None:
+        """Write to operator substrate via writer (gated) or raw substrate (legacy)."""
+        payload = {
+            "action": action,
+            "target": target,
+            "operator": "reaper",
+            "details": details,
+            "metadata": {},
+        }
+        if self._operator_writer is not None:
+            self._operator_writer.append(
+                record_type=f"operator:{action}",
+                payload=payload,
+                cell_id=cell_id,
+            )
+        elif self._operator_sub is not None:
+            self._operator_sub.record_action(
+                action=action, target=target, operator="reaper",
+                details=details, cell_id=cell_id,
+            )
+
     def start(self) -> None:
         """Start the Reaper. Subscribe to decisions substrate."""
         self._running = True
         self._decisions_sub.subscribe(self._on_decision)
         logger.warning("REAPER ONLINE - policy: %s", json.dumps(self._policy.to_dict()))
 
-        self._operator_sub.record_action(
-            action="reaper_start",
-            target="system",
-            operator="reaper",
-            details=json.dumps(self._policy.to_dict()),
-        )
+        self._record_operator_action("reaper_start", "system", details=json.dumps(self._policy.to_dict()))
 
     def stop(self) -> None:
         """Stop the Reaper."""
@@ -127,29 +148,19 @@ class Reaper:
             self._actions_taken, self._actions_skipped,
             len(self._ips_shunned), len(self._cells_locked),
         )
-
-        self._operator_sub.record_action(
-            action="reaper_stop",
-            target="system",
-            operator="reaper",
-            details=json.dumps(self.stats),
-        )
+        self._record_operator_action("reaper_stop", "system", details=json.dumps(self.stats))
 
     def pause(self) -> None:
         """Pause execution. Reaper still receives decisions but won't act."""
         self._paused = True
         logger.warning("REAPER PAUSED")
-        self._operator_sub.record_action(
-            action="reaper_pause", target="system", operator="reaper",
-        )
+        self._record_operator_action("reaper_pause", "system")
 
     def resume(self) -> None:
         """Resume execution."""
         self._paused = False
         logger.warning("REAPER RESUMED")
-        self._operator_sub.record_action(
-            action="reaper_resume", target="system", operator="reaper",
-        )
+        self._record_operator_action("reaper_resume", "system")
 
     def _on_decision(self, record: SubstrateRecord) -> None:
         """Callback from agent_decisions substrate."""
@@ -213,13 +224,7 @@ class Reaper:
         self._last_consensus = consensus
         if not consensus.get("actionable"):
             self._actions_skipped += 1
-            self._operator_sub.record_action(
-                action="reaper_shun_skip",
-                target=ip,
-                operator="reaper",
-                cell_id=cell_id,
-                details=json.dumps(consensus),
-            )
+            self._record_operator_action("reaper_shun_skip", ip, cell_id=cell_id, details=json.dumps(consensus))
             logger.info(
                 "REAPER SKIP: consensus %.2f tier=%s for %s",
                 consensus.get("score", 0.0),
@@ -230,11 +235,8 @@ class Reaper:
 
         with self._lock:
             # Log BEFORE execution
-            self._operator_sub.record_action(
-                action="reaper_shun_execute",
-                target=ip,
-                operator="reaper",
-                cell_id=cell_id,
+            self._record_operator_action(
+                "reaper_shun_execute", ip, cell_id=cell_id,
                 details=json.dumps({
                     "confidence": confidence,
                     "escalation_level": context.get("escalation_level", 0),
@@ -276,21 +278,12 @@ class Reaper:
         self._last_consensus = consensus
         if not consensus.get("actionable"):
             self._actions_skipped += 1
-            self._operator_sub.record_action(
-                action="reaper_lock_skip",
-                target=cell_id,
-                operator="reaper",
-                cell_id=cell_id,
-                details=json.dumps(consensus),
-            )
+            self._record_operator_action("reaper_lock_skip", cell_id, cell_id=cell_id, details=json.dumps(consensus))
             return
 
         with self._lock:
-            self._operator_sub.record_action(
-                action="reaper_lock_execute",
-                target=cell_id,
-                operator="reaper",
-                cell_id=cell_id,
+            self._record_operator_action(
+                "reaper_lock_execute", cell_id, cell_id=cell_id,
                 details=json.dumps({
                     "confidence": confidence,
                     "source_ip": context.get("source_ip", ""),
@@ -317,21 +310,12 @@ class Reaper:
         self._last_consensus = consensus
         if not consensus.get("actionable"):
             self._actions_skipped += 1
-            self._operator_sub.record_action(
-                action="reaper_preserve_skip",
-                target=cell_id,
-                operator="reaper",
-                cell_id=cell_id,
-                details=json.dumps(consensus),
-            )
+            self._record_operator_action("reaper_preserve_skip", cell_id, cell_id=cell_id, details=json.dumps(consensus))
             return
 
         with self._lock:
-            self._operator_sub.record_action(
-                action="reaper_preserve_execute",
-                target=cell_id,
-                operator="reaper",
-                cell_id=cell_id,
+            self._record_operator_action(
+                "reaper_preserve_execute", cell_id, cell_id=cell_id,
                 details=json.dumps({
                     "confidence": confidence,
                     "source_ip": context.get("source_ip", ""),

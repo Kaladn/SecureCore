@@ -65,6 +65,17 @@ def _build_parser() -> argparse.ArgumentParser:
     forge_p.add_argument("--verify", type=str, default="", help="verify forge chain for a substrate")
     forge_p.add_argument("--tail", type=int, default=0, help="tail forge records")
 
+    # help
+    help_p = sub.add_parser("help", help="four-tier help system")
+    help_p.add_argument("action", nargs="?", default="", help="search|show|where|chat|doctor|sync")
+    help_p.add_argument("query", nargs="?", default="", help="search query, help_id, symbol, or question")
+    help_p.add_argument("--tier", type=int, default=1, help="tier level for show (1/2/3)")
+
+    # agents
+    agents_p = sub.add_parser("agents", help="agent manager")
+    agents_p.add_argument("action", nargs="?", default="", help="inspect|permissions|denials")
+    agents_p.add_argument("target", nargs="?", default="", help="agent name or caller_id")
+
     return parser
 
 
@@ -91,6 +102,12 @@ def main() -> None:
     elif args.command == "forge":
         from securecore.cli.commands.forge import run
         run(args.substrate, args.verify, args.tail)
+    elif args.command == "help":
+        from securecore.cli.commands.help import run
+        run(args.action, args.query, args.tier)
+    elif args.command == "agents":
+        from securecore.cli.commands.agents import run
+        run(args.action, args.target)
 
 
 if __name__ == "__main__":

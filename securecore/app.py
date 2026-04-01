@@ -55,6 +55,11 @@ from securecore.agents.cognitive import CognitiveAgent
 from securecore.control.reaper import Reaper, ReaperPolicy
 from securecore.control.command_bus import ControlBus
 
+# Permissions
+from securecore.permissions.registry import CallerRegistry
+from securecore.permissions.gate import PermissionGate
+from securecore.permissions.types import SubstrateWriter, SubstrateReader
+
 # Logging
 from securecore.log_streams.streams import LogRouter
 
@@ -118,53 +123,112 @@ def create_app() -> Flask:
     log_router = LogRouter(log_dir)
 
     # ============================================================
+    # PERMISSIONS - register all callers, set gate on all substrates
+    # ============================================================
+    registry = CallerRegistry()
+    gate = PermissionGate(registry)
+
+    # Register every autonomous component with explicit permissions
+    # No self-registration. The factory defines who can touch what.
+
+    agent_names = [
+        "watcher", "profiler", "escalation",
+        "decoy_orchestrator", "chain_auditor", "cognitive", "containment",
+    ]
+    agent_entries = {}
+    for aname in agent_names:
+        agent_entries[aname] = registry.register(
+            caller_id=f"agent:{aname}",
+            caller_type="agent",
+            module_path=f"securecore.agents.{aname}",
+            allowed_write=["agent_decisions"],
+            allowed_read=["ingress", "mirror", "evidence", "telemetry", "hid", "agent_decisions"],
+        )
+
+    reaper_entry = registry.register(
+        caller_id="control:reaper",
+        caller_type="control",
+        module_path="securecore.control.reaper",
+        allowed_write=["operator"],
+        allowed_read=["agent_decisions", "hid"],
+    )
+
+    trap_entry = registry.register(
+        caller_id="routes:traps",
+        caller_type="routes",
+        module_path="securecore.decoys.routes",
+        allowed_write=["ingress", "mirror", "evidence", "telemetry"],
+        allowed_read=[],
+    )
+
+    shun_entry = registry.register(
+        caller_id="control:shun",
+        caller_type="control",
+        module_path="securecore.control.shun",
+        allowed_write=["operator"],
+        allowed_read=[],
+    )
+
+    # Set the gate on every substrate
+    for sub in substrates.values():
+        sub.set_permission_gate(gate)
+
+    # Build writer/reader interfaces
+    def _writer(caller_entry, substrate_name):
+        return SubstrateWriter(substrates[substrate_name], caller_entry.caller_id, caller_entry.signing_key)
+
+    def _reader(substrate_name):
+        return SubstrateReader(substrates[substrate_name])
+
+    # ============================================================
     # AGENTS - interpreters on substrate truth
     # ============================================================
-    agent_decisions_sub = substrates["agent_decisions"]
-
     agents = {}
 
-    # Watcher: watches ingress, emits to agent_decisions
-    watcher = WatcherAgent(agent_decisions_sub)
+    # Each agent gets a SubstrateWriter for agent_decisions only
+    # and SubstrateReaders for their watched substrates
+
+    watcher_writer = _writer(agent_entries["watcher"], "agent_decisions")
+    watcher = WatcherAgent(watcher_writer)
     watcher.watch(substrates["ingress"])
     agents["watcher"] = watcher
 
-    # Profiler: watches ingress + mirror, emits profiles
-    profiler = ProfilerAgent(agent_decisions_sub)
+    profiler_writer = _writer(agent_entries["profiler"], "agent_decisions")
+    profiler = ProfilerAgent(profiler_writer)
     profiler.watch(substrates["ingress"])
     profiler.watch(substrates["mirror"])
     agents["profiler"] = profiler
 
-    # Escalation: watches agent_decisions + mirror, emits escalation recs
-    escalation = EscalationAgent(agent_decisions_sub)
-    escalation.watch(agent_decisions_sub)
+    escalation_writer = _writer(agent_entries["escalation"], "agent_decisions")
+    escalation = EscalationAgent(escalation_writer)
+    escalation.watch(substrates["agent_decisions"])
     escalation.watch(substrates["mirror"])
     agents["escalation"] = escalation
 
-    # Decoy Orchestrator: watches mirror + agent_decisions, emits strategy
-    decoy_orch = DecoyOrchestratorAgent(agent_decisions_sub)
+    decoy_orch_writer = _writer(agent_entries["decoy_orchestrator"], "agent_decisions")
+    decoy_orch = DecoyOrchestratorAgent(decoy_orch_writer)
     decoy_orch.watch(substrates["mirror"])
-    decoy_orch.watch(agent_decisions_sub)
+    decoy_orch.watch(substrates["agent_decisions"])
     agents["decoy_orchestrator"] = decoy_orch
 
-    # Chain Auditor: periodically verifies all substrate chains
+    chain_auditor_writer = _writer(agent_entries["chain_auditor"], "agent_decisions")
     chain_auditor = ChainAuditorAgent(
-        agent_decisions_sub,
+        chain_auditor_writer,
         watched_substrates=list(substrates.values()),
         evidence_substrate=substrates["evidence"],
     )
     agents["chain_auditor"] = chain_auditor
 
-    # Cognitive: multi-anchor authenticity and threat assessment
-    cognitive = CognitiveAgent(agent_decisions_sub, hid_substrate=substrates["hid"])
+    cognitive_writer = _writer(agent_entries["cognitive"], "agent_decisions")
+    cognitive = CognitiveAgent(cognitive_writer, hid_substrate=substrates["hid"])
     cognitive.watch(substrates["ingress"])
     cognitive.watch(substrates["mirror"])
     cognitive.watch(substrates["hid"])
     agents["cognitive"] = cognitive
 
-    # Containment Advisor: watches escalation decisions, recommends actions
-    containment = ContainmentAdvisorAgent(agent_decisions_sub)
-    containment.watch(agent_decisions_sub)
+    containment_writer = _writer(agent_entries["containment"], "agent_decisions")
+    containment = ContainmentAdvisorAgent(containment_writer)
+    containment.watch(substrates["agent_decisions"])
     containment.watch(substrates["mirror"])
     agents["containment"] = containment
 
@@ -187,9 +251,10 @@ def create_app() -> Flask:
     # ============================================================
     # REAPER - autonomous containment executor
     # ============================================================
+    reaper_operator_writer = _writer(reaper_entry, "operator")
     reaper = Reaper(
-        decisions_substrate=agent_decisions_sub,
-        operator_substrate=substrates["operator"],
+        decisions_substrate=substrates["agent_decisions"],
+        operator_writer=reaper_operator_writer,
         hid_substrate=substrates["hid"],
         policy=ReaperPolicy(
             min_confidence=0.7,
@@ -217,10 +282,10 @@ def create_app() -> Flask:
     if app.config.get("HONEYPOT_ENABLED", True):
         from securecore.decoys.routes import trap_bp, init_trap_routes
         init_trap_routes(
-            ingress_sub=substrates["ingress"],
-            mirror_sub=substrates["mirror"],
-            evidence_sub=substrates["evidence"],
-            telemetry_sub=substrates["telemetry"],
+            ingress_writer=_writer(trap_entry, "ingress"),
+            mirror_writer=_writer(trap_entry, "mirror"),
+            evidence_writer=_writer(trap_entry, "evidence"),
+            telemetry_writer=_writer(trap_entry, "telemetry"),
             log_router=log_router,
         )
         app.register_blueprint(trap_bp)
@@ -231,6 +296,8 @@ def create_app() -> Flask:
     app.log_router = log_router
     app.reaper = reaper
     app.control_bus = control_bus
+    app.registry = registry
+    app.permission_gate = gate
 
     with app.app_context():
         from securecore.core import models  # noqa: F401
