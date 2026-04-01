@@ -79,9 +79,28 @@ class OllamaAdapter:
         except Exception:
             return False
 
+    def model_digest(self) -> str:
+        """Get the SHA-256 digest of the loaded model from ollama.
+
+        Returns the digest string, or empty string if unavailable.
+        This proves the exact model weights that produced a response.
+        """
+        try:
+            req = urllib.request.Request(f"{self._host}/api/tags", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+                for m in body.get("models", []):
+                    name = m.get("name", "")
+                    if name == self._model or self._model.split(":")[0] in name:
+                        return m.get("digest", "")
+        except Exception:
+            pass
+        return ""
+
     def status(self) -> dict:
         return {
             "host": self._host,
             "model": self._model,
             "available": self.is_available(),
+            "digest": self.model_digest(),
         }

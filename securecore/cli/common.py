@@ -33,6 +33,7 @@ LOG_STREAM_NAMES = [
     "operator",
     "health",
     "chain_anchor",
+    "llm_audit",
 ]
 
 

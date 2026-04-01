@@ -209,12 +209,25 @@ def _chat(question: str) -> None:
         print()
 
         result = bot.ask(question)
+
+        # Render structured response
         print(f"  {result['answer']}")
+
+        if result.get("basis"):
+            print(f"\n  {_colorize('Basis:', 'cyan')} {', '.join(result['basis'])}")
+        if result.get("file_refs"):
+            print(f"  {_colorize('Files:', 'cyan')} {', '.join(result['file_refs'])}")
+        if result.get("commands"):
+            print(f"  {_colorize('Commands:', 'cyan')} {', '.join(result['commands'])}")
+        if result.get("unknowns"):
+            print(f"  {_colorize('Unknown:', 'yellow')} {', '.join(result['unknowns'])}")
+
         print()
+        structured_tag = "structured" if result.get("structured") else "freeform"
         print(_colorize(f"  Sources: corpus={result['sources']['corpus_hits']} "
                         f"code={result['sources']['code_hits']} "
                         f"runtime={'yes' if result['sources']['runtime_included'] else 'no'} "
-                        f"model={result['model']}", "dim"))
+                        f"model={result['model']} format={structured_tag}", "dim"))
         print()
     except Exception as exc:
         print(f"\n  {_colorize(f'Help bot unavailable: {exc}', 'yellow')}")
@@ -229,33 +242,136 @@ def _doctor() -> None:
     corpus = HelpCorpus()
     code_index = CodeMirrorIndex()
     index = code_index.load()
+    warnings = []
 
     print()
-    print(_colorize("  HELP DOCTOR", "bold"))
+    print(_colorize("  HELP DOCTOR — GROUNDING AUDIT", "bold"))
     print(_colorize("  " + "=" * 50, "dim"))
     print()
 
-    # Corpus health
+    # 1. Corpus health
     stats = corpus.stats()
-    print(f"  Help entries:    {stats['total_ids']}")
+    print(_colorize("  CORPUS", "cyan"))
+    print(f"    entries:    {stats['total_ids']}")
     for cat, count in stats.get("categories", {}).items():
-        print(f"    {cat:20s}  {count}")
+        print(f"      {cat:20s}  {count}")
     print()
 
-    # Code index health
+    # 2. Code index health
     total_files = index.get("total_files", 0)
     total_symbols = index.get("total_symbols", 0)
     generated = index.get("generated_at", "never")
     stale = code_index._is_stale(index)
 
-    print(f"  Code index files:    {total_files}")
-    print(f"  Code index symbols:  {total_symbols}")
-    print(f"  Generated:           {generated}")
-    status = _colorize("STALE", "yellow") if stale else _colorize("CURRENT", "green")
-    print(f"  Status:              {status}")
-
+    print(_colorize("  CODE INDEX", "cyan"))
+    print(f"    files:      {total_files}")
+    print(f"    symbols:    {total_symbols}")
+    print(f"    generated:  {generated}")
+    idx_status = _colorize("STALE", "yellow") if stale else _colorize("CURRENT", "green")
+    print(f"    status:     {idx_status}")
     if stale:
-        print(f"\n  Run `securecore help sync` to rebuild.")
+        warnings.append("code index is stale — run `securecore help sync`")
+    print()
+
+    # 3. Verify command references in help content
+    print(_colorize("  COMMAND REFS", "cyan"))
+    # Get all known CLI commands from the parser
+    from securecore.cli.main import _build_parser
+    parser = _build_parser()
+    known_commands = set()
+    if hasattr(parser, "_subparsers"):
+        for action in parser._subparsers._actions:
+            if hasattr(action, "_parser_class"):
+                continue
+            if hasattr(action, "choices") and action.choices:
+                known_commands.update(action.choices.keys())
+
+    command_issues = 0
+    for help_id in [e["help_id"] for e in corpus.list_ids()]:
+        entry = corpus.get(help_id)
+        if not entry:
+            continue
+        t3 = entry.get("tier3", {})
+        for cmd in t3.get("commands", []):
+            # Extract the subcommand (e.g., "securecore reaper" -> "reaper")
+            parts = cmd.strip().split()
+            subcmd = parts[1] if len(parts) > 1 else ""
+            if subcmd and subcmd not in known_commands and not subcmd.startswith("-"):
+                print(f"    {_colorize('MISSING', 'red')}  {help_id} -> {cmd}")
+                warnings.append(f"command ref '{cmd}' in {help_id} not found in CLI parser")
+                command_issues += 1
+    if command_issues == 0:
+        print(f"    {_colorize('all command refs valid', 'green')}")
+    print()
+
+    # 4. Verify file references exist in code index or on disk
+    print(_colorize("  FILE REFS", "cyan"))
+    indexed_paths = {f.get("relative_path", "") for f in index.get("files", [])}
+    file_issues = 0
+    for help_id in [e["help_id"] for e in corpus.list_ids()]:
+        entry = corpus.get(help_id)
+        if not entry:
+            continue
+        t3 = entry.get("tier3", {})
+        for fpath in t3.get("files", []):
+            if fpath not in indexed_paths:
+                # Check disk as fallback
+                from pathlib import Path
+                from securecore.help.config import load_help_config
+                cfg = load_help_config()
+                full = Path(cfg["repo_root"]) / fpath
+                if not full.exists():
+                    print(f"    {_colorize('MISSING', 'red')}  {help_id} -> {fpath}")
+                    warnings.append(f"file ref '{fpath}' in {help_id} not found")
+                    file_issues += 1
+    if file_issues == 0:
+        print(f"    {_colorize('all file refs valid', 'green')}")
+    print()
+
+    # 5. Verify LLM roles align with registry
+    print(_colorize("  LLM ROLES", "cyan"))
+    from securecore.cli.common import request_live_command
+    registry_result = request_live_command("registry_snapshot") or {}
+    registry_callers = registry_result.get("registry", {}).get("callers", {})
+    llm_roles = ["llm:help", "llm:draft", "llm:analyze"]
+    for role_id in llm_roles:
+        if role_id in registry_callers:
+            entry = registry_callers[role_id]
+            writes = entry.get("allowed_write", [])
+            write_tag = _colorize("read-only", "green") if not writes else _colorize(f"writes={writes}", "red")
+            print(f"    {role_id:15s}  {write_tag}")
+        else:
+            print(f"    {role_id:15s}  {_colorize('NOT IN REGISTRY', 'yellow')}  (start organism to verify)")
+    print()
+
+    # 6. Check model availability
+    print(_colorize("  MODEL", "cyan"))
+    try:
+        from securecore.help.config import load_help_config
+        cfg = load_help_config()
+        from securecore.llm.adapters.ollama import OllamaAdapter
+        adapter = OllamaAdapter(host=cfg["ollama_host"], model=cfg["help_model"])
+        available = adapter.is_available()
+        digest = adapter.model_digest()
+        model_status = _colorize("AVAILABLE", "green") if available else _colorize("NOT AVAILABLE", "yellow")
+        print(f"    model:      {cfg['help_model']}")
+        print(f"    status:     {model_status}")
+        if digest:
+            print(f"    digest:     {digest[:16]}")
+        if not available:
+            warnings.append(f"model {cfg['help_model']} not available via ollama")
+    except Exception as exc:
+        print(f"    {_colorize(f'check failed: {exc}', 'yellow')}")
+        warnings.append(f"model check failed: {exc}")
+    print()
+
+    # Summary
+    if warnings:
+        print(_colorize("  WARNINGS", "yellow"))
+        for w in warnings:
+            print(f"    - {w}")
+    else:
+        print(_colorize("  ALL CHECKS PASSED", "green"))
     print()
 
 

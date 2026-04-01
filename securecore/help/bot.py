@@ -43,6 +43,18 @@ Doctrine:
 - Substrates append. Forge stores. Loggers log. Agents infer.
 - No write without identity. No identity without registration.
 - Read commands read. Control commands hit the live organism.
+
+You MUST respond with a JSON object in this exact format:
+{
+  "answer": "your concise answer here",
+  "basis": ["help_id or source that supports the answer"],
+  "file_refs": ["securecore/path/to/file.py"],
+  "commands": ["securecore command --flag"],
+  "unknowns": ["anything the question asked that you could not answer from context"]
+}
+
+If context is missing for part of the question, put that part in unknowns.
+Do not add fields. Do not wrap in markdown. Return only the JSON object.
 """
 
 
@@ -93,9 +105,18 @@ class HelpBot:
         except ValueError as exc:
             response = str(exc)
 
+        # Parse structured response
+        structured = self._parse_structured_response(response)
+
         return {
             "question": question,
-            "answer": response or "Help bot is unavailable. Ollama may not be running.",
+            "answer": structured.get("answer", response or "Help bot is unavailable. Ollama may not be running."),
+            "basis": structured.get("basis", []),
+            "file_refs": structured.get("file_refs", []),
+            "commands": structured.get("commands", []),
+            "unknowns": structured.get("unknowns", []),
+            "raw_response": response,
+            "structured": bool(structured.get("answer")),
             "sources": {
                 "corpus_hits": metadata["corpus_hits"],
                 "code_hits": metadata["code_hits"],
@@ -104,6 +125,34 @@ class HelpBot:
             "context_bundle_hash": context_bundle.bundle_hash,
             "model": self._broker.get_role(self._role_name).model if self._broker.get_role(self._role_name) else "unknown",
         }
+
+    def _parse_structured_response(self, response: str | None) -> dict:
+        """Parse a structured JSON response from the model.
+
+        Returns the parsed dict if valid, or an empty dict if the model
+        returned freeform text (graceful degradation).
+        """
+        if not response:
+            return {}
+        text = response.strip()
+        # Strip markdown code fences if the model wrapped the JSON
+        if text.startswith("```"):
+            lines = text.splitlines()
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            text = "\n".join(lines).strip()
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and "answer" in parsed:
+                return {
+                    "answer": str(parsed.get("answer", "")),
+                    "basis": list(parsed.get("basis", [])),
+                    "file_refs": list(parsed.get("file_refs", [])),
+                    "commands": list(parsed.get("commands", [])),
+                    "unknowns": list(parsed.get("unknowns", [])),
+                }
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+        return {}
 
     def status(self) -> dict:
         role = self._broker.get_role(self._role_name)

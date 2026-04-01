@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import uuid
 from datetime import datetime, UTC
 from typing import Optional
 
@@ -69,8 +70,9 @@ class LLMBroker:
     Manages roles, enforces read permissions, logs interactions.
     """
 
-    def __init__(self, ollama_host: str = "http://127.0.0.1:11434"):
+    def __init__(self, ollama_host: str = "http://127.0.0.1:11434", log_router=None):
         self._ollama_host = ollama_host
+        self._log_router = log_router
         self._roles: dict[str, LLMRole] = {}
         self._adapters: dict[str, OllamaAdapter] = {}
         self._interaction_log: list[dict] = []
@@ -167,13 +169,22 @@ class LLMBroker:
             max_tokens=max_tokens,
         )
 
-        # Log interaction (hashes only, not full content)
+        # Build invocation identity
+        query_id = uuid.uuid4().hex[:16]
         role.sequence += 1
         role.total_queries += 1
         if response:
             role.total_tokens_est += len(response) // 4
 
-        self._log_interaction(role, prompt, response, context_bundle, source_labels)
+        # Capture model digest (proves exact weights used)
+        model_digest = ""
+        if hasattr(adapter, "model_digest"):
+            model_digest = adapter.model_digest()
+
+        self._log_interaction(
+            role, prompt, response, context_bundle, source_labels,
+            query_id=query_id, model_digest=model_digest,
+        )
 
         return response
 
@@ -184,11 +195,17 @@ class LLMBroker:
         response: Optional[str],
         context_bundle: ContextBundle,
         source_labels: list[str],
+        query_id: str = "",
+        model_digest: str = "",
     ) -> None:
-        """Log prompt/response hashes for audit trail."""
+        """Log full invocation identity for audit trail."""
         entry = {
+            "query_id": query_id,
             "role": role.role_name,
             "caller_id": role.caller_id,
+            "model": role.model,
+            "model_digest": model_digest[:16] if model_digest else "",
+            "system_prompt_hash": hashlib.sha256(role.system_prompt.encode("utf-8")).hexdigest()[:16],
             "sequence": role.sequence,
             "timestamp": datetime.now(UTC).isoformat(),
             "prompt_hash": hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16],
@@ -203,6 +220,29 @@ class LLMBroker:
         if len(self._interaction_log) >= self._log_max:
             self._interaction_log = self._interaction_log[-250:]
         self._interaction_log.append(entry)
+
+        # Write to persistent llm_audit stream if router is wired
+        if self._log_router is not None:
+            try:
+                from securecore.log_streams.schemas import llm_audit_entry
+                self._log_router.log(llm_audit_entry(
+                    query_id=entry["query_id"],
+                    role=entry["role"],
+                    caller_id=entry["caller_id"],
+                    model=entry["model"],
+                    model_digest=entry.get("model_digest", ""),
+                    system_prompt_hash=entry.get("system_prompt_hash", ""),
+                    sequence=entry["sequence"],
+                    prompt_hash=entry["prompt_hash"],
+                    context_bundle_hash=entry["context_bundle_hash"],
+                    source_labels=entry["source_labels"],
+                    response_hash=entry["response_hash"],
+                    prompt_len=entry["prompt_len"],
+                    response_len=entry["response_len"],
+                    success=entry["success"],
+                ))
+            except Exception:
+                pass  # audit stream failure must not break inference
 
     def get_role(self, role_name: str) -> Optional[LLMRole]:
         return self._roles.get(role_name)
