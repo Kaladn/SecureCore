@@ -18,3 +18,8 @@ logs/
 *.jsonl
 .DS_Store
 Thumbs.db
+.claude/
+.pytest_cache/
+.test_tmp/
+instance/
+docs/
