@@ -97,8 +97,13 @@ def run() -> None:
 
     print(_colorize("  LOG STREAMS", "cyan"))
     for name in LOG_STREAM_NAMES:
-        count = live_logs.get(name, count_log_entries(name))
-        print(f"    {name:20s}  writes={count:>6d}")
+        if name in live_logs:
+            scope = "live"
+            count = live_logs[name]
+        else:
+            scope = "disk"
+            count = count_log_entries(name)
+        print(f"    {name:20s}  {scope}={count:>6d}")
     print()
 
     print(_colorize("  SUMMARY", "bold"))
