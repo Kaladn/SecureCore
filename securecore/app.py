@@ -53,6 +53,7 @@ from securecore.agents.cognitive import CognitiveAgent
 
 # Control
 from securecore.control.reaper import Reaper, ReaperPolicy
+from securecore.control.command_bus import ControlBus
 
 # Logging
 from securecore.log_streams.streams import LogRouter
@@ -199,6 +200,15 @@ def create_app() -> Flask:
     )
     reaper.start()
 
+    control_bus = ControlBus(
+        os.path.join(data_dir, "runtime", "control_bus"),
+        substrates=substrates,
+        agents=agents,
+        log_router=log_router,
+        reaper=reaper,
+    )
+    control_bus.start()
+
     # Control plane routes
     init_control_routes(substrates, agents, log_router, reaper)
     app.register_blueprint(control_bp)
@@ -220,6 +230,7 @@ def create_app() -> Flask:
     app.agents = agents
     app.log_router = log_router
     app.reaper = reaper
+    app.control_bus = control_bus
 
     with app.app_context():
         from securecore.core import models  # noqa: F401
