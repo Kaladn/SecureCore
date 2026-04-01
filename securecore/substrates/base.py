@@ -129,7 +129,7 @@ class Substrate:
         self._lock = threading.Lock()
         self._subscribers: list = []
         self._permission_gate = None
-        self._active_token = None
+        self._token_local = threading.local()
         self._forge_writer = None
         self._forge_failures = 0
         self._forge_strict = os.getenv("SECURECORE_FORGE_STRICT", "false").lower() == "true"
@@ -178,17 +178,20 @@ class Substrate:
         self._permission_gate = gate
 
     def set_active_token(self, token) -> None:
-        """Set a write token for the current caller context.
+        """Set a write token for the current thread's caller context.
 
         When substrate-specific methods (record_request, record_evidence, etc.)
         call self.append() internally, they don't have a write_token parameter.
         A SubstrateWriter sets the active token before delegating to these methods,
         so the gate can still verify the caller.
+
+        Uses thread-local storage to prevent concurrent callers from
+        overwriting each other's tokens.
         """
-        self._active_token = token
+        self._token_local.active_token = token
 
     def clear_active_token(self) -> None:
-        self._active_token = None
+        self._token_local.active_token = None
 
     def validate_payload(self, record_type: str, payload: dict) -> None:
         """Override in subclasses to enforce schema.
@@ -217,11 +220,14 @@ class Substrate:
         # get "denied", not "invalid payload"
         verified_caller = ""
         if self._permission_gate is not None:
-            effective_token = write_token or getattr(self, "_active_token", None)
+            effective_token = write_token or getattr(self._token_local, "active_token", None)
             if effective_token is None:
                 from securecore.permissions.gate import PermissionDenied
                 raise PermissionDenied("anonymous", self.name, "no write_token provided")
-            verified_caller = self._permission_gate.check(self.name, effective_token)
+            # Pass actual payload for binding verification when using direct tokens.
+            # Active tokens from delegated calls can't bind payload (built internally).
+            actual_payload = payload if write_token is not None else None
+            verified_caller = self._permission_gate.check(self.name, effective_token, actual_payload)
 
         self.validate_payload(record_type, payload)
 

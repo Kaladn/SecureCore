@@ -203,6 +203,61 @@ class TestPermissionGate(unittest.TestCase):
         self.assertEqual(denials[0]["caller_id"], "agent:watcher")
         self.assertEqual(denials[0]["substrate"], "ingress")
 
+    def test_payload_mismatch_denied(self):
+        """Token signed for one payload cannot authorize a different payload."""
+        original_payload = dict(VALID_INGRESS)
+        token = WriteToken(
+            caller_id="routes:traps",
+            record_type="http_request",
+            payload=original_payload,
+            signing_key=self.trap_entry.signing_key,
+        )
+        # Try to write a DIFFERENT payload with the same token
+        tampered_payload = dict(VALID_INGRESS)
+        tampered_payload["path"] = "/evil"
+        with self.assertRaises(PermissionDenied) as ctx:
+            self.ingress.append(
+                record_type="http_request",
+                payload=tampered_payload,
+                write_token=token,
+            )
+        self.assertIn("payload hash mismatch", str(ctx.exception))
+
+    def test_concurrent_delegated_writes_isolated(self):
+        """Concurrent delegated writes via SubstrateWriter should not cross-contaminate tokens."""
+        import threading
+
+        writer_a = SubstrateWriter(self.decisions, "agent:watcher", self.agent_entry.signing_key)
+
+        errors = []
+        results = []
+
+        def write_decision(writer, name, index):
+            try:
+                record = writer.append(
+                    record_type=f"agent_decision:test_{index}",
+                    payload={"agent_name": name, "confidence": 0.5, "index": index},
+                )
+                results.append(record)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = []
+        for i in range(10):
+            t = threading.Thread(target=write_decision, args=(writer_a, "watcher", i))
+            threads.append(t)
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(errors), 0, f"Concurrent write errors: {errors}")
+        self.assertEqual(len(results), 10)
+        # Every record should have the correct caller_id
+        for record in results:
+            self.assertEqual(record.payload["_caller_id"], "agent:watcher")
+
     def test_caller_identity_immutable_in_record(self):
         """Verified caller_id is embedded in the record payload and cannot be overridden."""
         payload = dict(VALID_INGRESS)

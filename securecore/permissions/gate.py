@@ -91,8 +91,14 @@ class PermissionGate:
         self._denial_log: list[dict] = []
         self._denial_log_max = 1000
 
-    def check(self, substrate_name: str, token: WriteToken) -> str:
+    def check(self, substrate_name: str, token: WriteToken, actual_payload: dict | None = None) -> str:
         """Verify a write is authorized. Returns caller_id on success.
+
+        If actual_payload is provided, verifies the token's payload_hash
+        matches the real payload being written (prevents token reuse with
+        different data). For delegated substrate methods where the payload
+        is built internally, actual_payload may be None — identity and
+        ACL are still verified.
 
         Raises PermissionDenied on failure.
         """
@@ -108,7 +114,7 @@ class PermissionGate:
             self._deny(token.caller_id, substrate_name, "not in allowed_write list")
             raise PermissionDenied(token.caller_id, substrate_name, "not in allowed_write list")
 
-        # 3. Is signature valid?
+        # 3. Is signature valid? (proves caller holds the real HMAC key)
         valid = verify_signature(
             signing_key=entry.signing_key,
             caller_id=token.caller_id,
@@ -122,6 +128,16 @@ class PermissionGate:
             entry.record_denial(substrate_name)
             self._deny(token.caller_id, substrate_name, "invalid signature")
             raise PermissionDenied(token.caller_id, substrate_name, "invalid signature")
+
+        # 4. Payload binding check (when actual payload is available)
+        if actual_payload is not None:
+            real_hash = hashlib.sha256(
+                json.dumps(actual_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if token.payload_hash != real_hash:
+                entry.record_denial(substrate_name)
+                self._deny(token.caller_id, substrate_name, "payload hash mismatch")
+                raise PermissionDenied(token.caller_id, substrate_name, "payload hash mismatch")
 
         # Authorized
         entry.record_write()

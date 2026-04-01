@@ -21,15 +21,18 @@ _substrates = {}
 _agents = {}
 _log_router = None
 _reaper = None
+_operator_writer = None
 
 
-def init_control_routes(substrates: dict, agents: dict, log_router=None, reaper=None):
+def init_control_routes(substrates: dict, agents: dict, log_router=None, reaper=None,
+                        operator_writer=None):
     """Wire up control routes with substrate and agent references."""
-    global _substrates, _agents, _log_router, _reaper
+    global _substrates, _agents, _log_router, _reaper, _operator_writer
     _substrates = substrates
     _agents = agents
     _log_router = log_router
     _reaper = reaper
+    _operator_writer = operator_writer
 
 
 # ============================================================
@@ -210,7 +213,7 @@ def manual_shun():
 
     result = do_shun(
         ip=ip, reason=reason,
-        operator_substrate=_substrates.get("operator"),
+        operator_substrate=_operator_writer or _substrates.get("operator"),
     )
     return jsonify(result), 200 if result["ok"] else 400
 
@@ -228,7 +231,7 @@ def manual_unshun():
 
     result = do_unshun(
         ip=ip, reason=reason,
-        operator_substrate=_substrates.get("operator"),
+        operator_substrate=_operator_writer or _substrates.get("operator"),
     )
     return jsonify(result), 200 if result["ok"] else 404
 

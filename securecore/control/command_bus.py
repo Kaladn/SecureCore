@@ -20,7 +20,8 @@ from securecore.control.shun import shun_ip, unshun_ip
 class ControlBus:
     """File-backed local control channel for the live organism."""
 
-    def __init__(self, base_dir: str | Path, substrates: dict, agents: dict, log_router, reaper):
+    def __init__(self, base_dir: str | Path, substrates: dict, agents: dict, log_router, reaper,
+                 operator_writer=None, registry=None, permission_gate=None):
         self._base_dir = Path(base_dir)
         self._commands_dir = self._base_dir / "commands"
         self._responses_dir = self._base_dir / "responses"
@@ -29,6 +30,9 @@ class ControlBus:
         self._agents = agents
         self._log_router = log_router
         self._reaper = reaper
+        self._operator_writer = operator_writer
+        self._registry = registry
+        self._permission_gate = permission_gate
         self._running = False
         self._thread: threading.Thread | None = None
         self._started_at = datetime.now(UTC).isoformat()
@@ -112,7 +116,7 @@ class ControlBus:
             return shun_ip(
                 ip=ip,
                 reason=reason,
-                operator_substrate=self._substrates.get("operator"),
+                operator_substrate=self._operator_writer or self._substrates.get("operator"),
             )
         if command == "reaper_unshun":
             ip = str(args.get("ip", "")).strip()
@@ -122,8 +126,12 @@ class ControlBus:
             return unshun_ip(
                 ip=ip,
                 reason=reason,
-                operator_substrate=self._substrates.get("operator"),
+                operator_substrate=self._operator_writer or self._substrates.get("operator"),
             )
+        if command == "registry_snapshot":
+            return {"registry": self._registry.summary() if self._registry else {}}
+        if command == "gate_denials":
+            return {"denials": self._permission_gate.recent_denials() if self._permission_gate else []}
 
         return {"ok": False, "error": f"unknown command: {command}"}
 

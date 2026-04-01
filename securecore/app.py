@@ -265,17 +265,21 @@ def create_app() -> Flask:
     )
     reaper.start()
 
+    shun_operator_writer = _writer(shun_entry, "operator")
     control_bus = ControlBus(
         os.path.join(data_dir, "runtime", "control_bus"),
         substrates=substrates,
         agents=agents,
         log_router=log_router,
         reaper=reaper,
+        operator_writer=shun_operator_writer,
+        registry=registry,
+        permission_gate=gate,
     )
     control_bus.start()
 
     # Control plane routes
-    init_control_routes(substrates, agents, log_router, reaper)
+    init_control_routes(substrates, agents, log_router, reaper, operator_writer=shun_operator_writer)
     app.register_blueprint(control_bp)
 
     # Trap routes (honeypot)
