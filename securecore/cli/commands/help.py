@@ -185,11 +185,13 @@ def _chat(question: str) -> None:
 
         config = load_help_config()
         broker = LLMBroker(ollama_host=config["ollama_host"])
+        from securecore.help.bot import _load_system_prompt
+        prompt = _load_system_prompt(config)
         broker.register_role(
             role_name="help",
             caller_id="llm:help",
             model=config["help_model"],
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=prompt,
             allowed_reads=["help_corpus", "code_index", "runtime_snapshot"],
             max_context_chars=config["max_context_chars"],
         )

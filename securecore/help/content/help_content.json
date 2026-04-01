@@ -67,7 +67,7 @@
     "tier3": {
       "how": "permissions/gate.py implements PermissionGate.check(). permissions/registry.py manages CallerEntry records. permissions/types.py provides SubstrateReader (no append) and SubstrateWriter (auto-signs with HMAC). app.py registers all callers at boot.",
       "files": ["securecore/permissions/gate.py", "securecore/permissions/registry.py", "securecore/permissions/types.py"],
-      "commands": ["securecore agents list", "securecore agents inspect <name>"]
+      "commands": ["securecore agents", "securecore agents inspect <name>"]
     }
   },
   "forge": {

@@ -108,10 +108,19 @@ class LLMBroker:
         role_name: str,
         prompt: str,
         context: str = "",
+        context_sources: dict[str, str] | None = None,
         temperature: float = 0.3,
         max_tokens: int = 2048,
     ) -> Optional[str]:
         """Send a query through a registered role.
+
+        context_sources is the preferred way to pass context: a dict of
+        {source_label: content}. The broker verifies all source labels
+        are in the role's allowed_reads before assembling the prompt.
+        Disallowed sources are dropped and logged.
+
+        The legacy context parameter is accepted but bypasses source
+        enforcement (for backward compatibility during transition).
 
         Returns the response text, or None if unavailable.
         """
@@ -125,7 +134,20 @@ class LLMBroker:
             logger.warning("LLM query denied: no adapter for model %s", role.model)
             return None
 
-        # Build full prompt with context
+        # Build context from tagged sources (enforced) or raw string (legacy)
+        if context_sources:
+            allowed = set(role.allowed_reads) if role.allowed_reads else set()
+            filtered_parts = []
+            for source, content in context_sources.items():
+                if allowed and source not in allowed:
+                    logger.warning(
+                        "LLM context source blocked: role=%s source=%s not in allowed_reads",
+                        role_name, source,
+                    )
+                    continue
+                filtered_parts.append(f"[{source}]\n{content}")
+            context = "\n\n---\n\n".join(filtered_parts)
+
         full_prompt = prompt
         if context:
             truncated = context[:role.max_context_chars]

@@ -169,6 +169,29 @@ def create_app() -> Flask:
         allowed_read=[],
     )
 
+    # Register LLM roles — read-only, no write or control authority
+    registry.register(
+        caller_id="llm:help",
+        caller_type="llm",
+        module_path="securecore.llm.broker",
+        allowed_write=[],
+        allowed_read=["help_corpus", "code_index", "runtime_snapshot"],
+    )
+    registry.register(
+        caller_id="llm:draft",
+        caller_type="llm",
+        module_path="securecore.llm.broker",
+        allowed_write=[],
+        allowed_read=["help_corpus", "code_index"],
+    )
+    registry.register(
+        caller_id="llm:analyze",
+        caller_type="llm",
+        module_path="securecore.llm.broker",
+        allowed_write=[],
+        allowed_read=["help_corpus", "code_index", "runtime_snapshot"],
+    )
+
     # Set the gate on every substrate
     for sub in substrates.values():
         sub.set_permission_gate(gate)
@@ -176,9 +199,6 @@ def create_app() -> Flask:
     # Build writer/reader interfaces
     def _writer(caller_entry, substrate_name):
         return SubstrateWriter(substrates[substrate_name], caller_entry.caller_id, caller_entry.signing_key)
-
-    def _reader(substrate_name):
-        return SubstrateReader(substrates[substrate_name])
 
     # ============================================================
     # AGENTS - interpreters on substrate truth

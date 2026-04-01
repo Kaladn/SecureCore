@@ -47,6 +47,20 @@ Doctrine:
 """
 
 
+def _load_system_prompt(config: dict) -> str:
+    """Load system prompt from file if present, fall back to built-in constant."""
+    prompt_path = config.get("system_prompt_path")
+    if prompt_path:
+        from pathlib import Path
+        p = Path(prompt_path)
+        if p.exists() and p.is_file():
+            try:
+                return p.read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+    return SYSTEM_PROMPT
+
+
 class HelpBot:
     """Grounded help chat backed by local LLM."""
 
@@ -56,6 +70,7 @@ class HelpBot:
         self._corpus = HelpCorpus()
         self._code_index = CodeMirrorIndex()
         self._config = load_help_config()
+        self._system_prompt = _load_system_prompt(self._config)
 
     def ask(self, question: str, include_runtime: bool = True) -> dict:
         """Ask the help bot a question.
@@ -104,13 +119,21 @@ class HelpBot:
             except Exception as exc:
                 context_parts.append(f"RUNTIME STATE: unavailable ({exc})")
 
-        context = "\n\n---\n\n".join(context_parts)
+        # Build tagged context sources for enforcement
+        context_sources = {}
+        if corpus_hits:
+            context_sources["help_corpus"] = "\n\n".join(context_parts[:1]) if context_parts else ""
+        if code_hits and len(context_parts) > (1 if corpus_hits else 0):
+            idx = 1 if corpus_hits else 0
+            context_sources["code_index"] = context_parts[idx] if idx < len(context_parts) else ""
+        if include_runtime and "RUNTIME STATE" in (context_parts[-1] if context_parts else ""):
+            context_sources["runtime_snapshot"] = context_parts[-1]
 
-        # Query LLM
+        # Query LLM with tagged sources (broker enforces allowed_reads)
         response = self._broker.query(
             role_name=self._role_name,
             prompt=question,
-            context=context,
+            context_sources=context_sources,
         )
 
         return {

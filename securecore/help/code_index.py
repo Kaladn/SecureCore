@@ -78,7 +78,7 @@ class CodeMirrorIndex:
         self.index_path: Path = self.config["index_path"]
         self.manifest_path: Path = self.config["manifest_path"]
 
-    def sync(self, force: bool = False) -> dict[str, Any]:
+    def sync(self) -> dict[str, Any]:
         self.mirror_dir.mkdir(parents=True, exist_ok=True)
         files: list[dict[str, Any]] = []
         mirrored_paths: set[Path] = set()
