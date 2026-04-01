@@ -145,7 +145,7 @@ def _process_trap_request(decoy_content: str, content_type: str, status_code: in
 
     # 5. Log to streams
     if _log_router:
-        from securecore.logging.schemas import raw_ingress_entry, forensic_entry, normalized_event_entry
+        from securecore.log_streams.schemas import raw_ingress_entry, forensic_entry, normalized_event_entry
         _log_router.log(raw_ingress_entry(
             source_ip=source_ip, source_port=source_port, method=method, path=path,
             headers=headers, body_size=len(body),

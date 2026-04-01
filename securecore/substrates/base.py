@@ -25,7 +25,6 @@ import hashlib
 import json
 import os
 import threading
-import time
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import Iterator, Optional
@@ -129,6 +128,22 @@ class Substrate:
         self._last_hash = "GENESIS"
         self._lock = threading.Lock()
         self._subscribers: list = []
+        self._forge_writer = None
+        self._forge_failures = 0
+        self._forge_strict = os.getenv("SECURECORE_FORGE_STRICT", "false").lower() == "true"
+
+        if os.getenv("SECURECORE_FORGE_ENABLED", "false").lower() == "true":
+            forge_root = os.getenv("SECURECORE_FORGE_DIR", "")
+            if forge_root:
+                forge_base = Path(forge_root)
+            else:
+                forge_base = self._data_dir.parent / "forge"
+            try:
+                from securecore.forge.writer import ForgeWriter
+                self._forge_writer = ForgeWriter(forge_base / self.name)
+            except Exception:
+                if self._forge_strict:
+                    raise
 
         # Recover sequence and last hash from existing JSONL
         self._recover_state()
@@ -189,6 +204,14 @@ class Substrate:
             # Write to JSONL (primary truth store)
             with open(self._jsonl_path, "a", encoding="utf-8") as f:
                 f.write(record.to_json() + "\n")
+
+            if self._forge_writer is not None:
+                try:
+                    self._forge_writer.append_dict(record.to_dict())
+                except Exception:
+                    self._forge_failures += 1
+                    if self._forge_strict:
+                        raise
 
             self._sequence += 1
             self._last_hash = record.chain_hash
@@ -324,3 +347,16 @@ class Substrate:
     @property
     def jsonl_path(self) -> str:
         return str(self._jsonl_path)
+
+    def forge_status(self) -> dict:
+        if self._forge_writer is None:
+            return {
+                "enabled": False,
+                "failures": self._forge_failures,
+            }
+        stats = self._forge_writer.stats()
+        stats.update({
+            "enabled": True,
+            "failures": self._forge_failures,
+        })
+        return stats

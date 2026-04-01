@@ -16,8 +16,16 @@ Every touch creates multiple coordinated records:
 
 import logging
 import os
+from pathlib import Path
+import sys
 import threading
 import time
+
+if __name__ == "__main__" and (__package__ is None or __package__ == ""):
+    repo_root = Path(__file__).resolve().parent.parent
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
 
 from flask import Flask
 
@@ -47,7 +55,7 @@ from securecore.agents.cognitive import CognitiveAgent
 from securecore.control.reaper import Reaper, ReaperPolicy
 
 # Logging
-from securecore.logging.streams import LogRouter
+from securecore.log_streams.streams import LogRouter
 
 # Routes
 from securecore.routes.health import health_bp
