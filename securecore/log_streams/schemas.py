@@ -172,3 +172,40 @@ def chain_anchor_entry(
         "record_count": record_count,
         "verification_result": verification_result,
     }
+
+
+def llm_audit_entry(
+    query_id: str,
+    role: str,
+    caller_id: str,
+    model: str,
+    model_digest: str = "",
+    system_prompt_hash: str = "",
+    sequence: int = 0,
+    prompt_hash: str = "",
+    context_bundle_hash: str = "",
+    source_labels: list[str] | None = None,
+    response_hash: str = "",
+    prompt_len: int = 0,
+    response_len: int = 0,
+    success: bool = False,
+) -> dict:
+    """Schema for LLM invocation audit entries."""
+    return {
+        "stream": "llm_audit",
+        "timestamp": _now(),
+        "query_id": query_id,
+        "role": role,
+        "caller_id": caller_id,
+        "model": model,
+        "model_digest": model_digest,
+        "system_prompt_hash": system_prompt_hash,
+        "sequence": sequence,
+        "prompt_hash": prompt_hash,
+        "context_bundle_hash": context_bundle_hash,
+        "source_labels": source_labels or [],
+        "response_hash": response_hash,
+        "prompt_len": prompt_len,
+        "response_len": response_len,
+        "success": success,
+    }

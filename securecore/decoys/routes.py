@@ -41,12 +41,15 @@ _cells: dict[str, dict] = {}
 _cells_by_fingerprint: dict[str, str] = {}
 
 
-def init_trap_routes(ingress_sub, mirror_sub, evidence_sub, telemetry_sub, log_router):
+def init_trap_routes(ingress_writer=None, mirror_writer=None, evidence_writer=None,
+                     telemetry_writer=None, log_router=None,
+                     ingress_sub=None, mirror_sub=None, evidence_sub=None, telemetry_sub=None):
+    """Wire trap routes with writer interfaces (gated) or raw substrates (legacy)."""
     global _ingress_sub, _mirror_sub, _evidence_sub, _telemetry_sub, _log_router
-    _ingress_sub = ingress_sub
-    _mirror_sub = mirror_sub
-    _evidence_sub = evidence_sub
-    _telemetry_sub = telemetry_sub
+    _ingress_sub = ingress_writer or ingress_sub
+    _mirror_sub = mirror_writer or mirror_sub
+    _evidence_sub = evidence_writer or evidence_sub
+    _telemetry_sub = telemetry_writer or telemetry_sub
     _log_router = log_router
 
 
@@ -145,7 +148,7 @@ def _process_trap_request(decoy_content: str, content_type: str, status_code: in
 
     # 5. Log to streams
     if _log_router:
-        from securecore.logging.schemas import raw_ingress_entry, forensic_entry, normalized_event_entry
+        from securecore.log_streams.schemas import raw_ingress_entry, forensic_entry, normalized_event_entry
         _log_router.log(raw_ingress_entry(
             source_ip=source_ip, source_port=source_port, method=method, path=path,
             headers=headers, body_size=len(body),

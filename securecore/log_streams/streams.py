@@ -75,6 +75,7 @@ class LogRouter:
         "operator",
         "health",
         "chain_anchor",
+        "llm_audit",
     ]
 
     def __init__(self, log_dir: str):

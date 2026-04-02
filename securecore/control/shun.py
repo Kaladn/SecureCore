@@ -81,7 +81,7 @@ def shun_ip(
     reason: str,
     cell_id: str = "",
     escalation_level: int = 0,
-    operator_substrate=None,
+    operator_writer=None,
     dry_run: bool = False,
 ) -> dict:
     if ip in PROTECTED_IPS:
@@ -104,8 +104,8 @@ def shun_ip(
             "hit_count": 0,
         }
 
-    if operator_substrate:
-        operator_substrate.record_shun(
+    if operator_writer:
+        operator_writer.record_shun(
             ip=ip, reason=reason, cell_id=cell_id, firewall_rule=fw_created,
         )
 
@@ -113,7 +113,7 @@ def shun_ip(
     return {"ok": True, "status": "shunned", "ip": ip, "firewall_rule_created": fw_created}
 
 
-def unshun_ip(ip: str, reason: str = "operator release", operator_substrate=None, dry_run: bool = False) -> dict:
+def unshun_ip(ip: str, reason: str = "operator release", operator_writer=None, dry_run: bool = False) -> dict:
     with _shun_lock:
         entry = _shunned_ips.pop(ip, None)
 
@@ -124,8 +124,8 @@ def unshun_ip(ip: str, reason: str = "operator release", operator_substrate=None
     if entry.get("firewall_rule_created"):
         fw_removed = _remove_firewall_rule(ip, dry_run=dry_run)
 
-    if operator_substrate:
-        operator_substrate.record_unshun(ip=ip, reason=reason, cell_id=entry.get("cell_id", ""))
+    if operator_writer:
+        operator_writer.record_unshun(ip=ip, reason=reason, cell_id=entry.get("cell_id", ""))
 
     logger.warning("IP UNSHUNNED: %s reason='%s'", ip, reason)
     return {"ok": True, "status": "unshunned", "ip": ip, "firewall_rule_removed": fw_removed}

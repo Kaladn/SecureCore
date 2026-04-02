@@ -1,0 +1,125 @@
+{
+  "substrates": {
+    "label": "Substrates",
+    "category": "Architecture",
+    "tier1": {
+      "what": "Substrates are append-only, hash-chained truth stores. They record what actually happened.",
+      "when": "Every trap hit, agent decision, operator action, and device event creates substrate records."
+    },
+    "tier2": {
+      "concept": "Substrates are the ground truth of SecureCore. There are 7: ingress, mirror, evidence, telemetry, agent_decisions, operator, and hid. Each is a JSONL file with SHA-256 hash chaining — tampering with any record breaks the chain. Agents read substrates but only write to agent_decisions. The Reaper only writes to operator.",
+      "misunderstanding": "Substrates are not logs. Logs are a separate concern (log_streams/). Substrates are immutable truth."
+    },
+    "tier3": {
+      "how": "substrates/base.py implements append-only JSONL with hash chains. Each substrate subclass adds domain-specific record methods. The permission gate in base.py enforces caller identity on every append.",
+      "files": ["securecore/substrates/base.py", "securecore/substrates/ingress.py", "securecore/substrates/evidence.py"],
+      "commands": ["securecore tail <substrate>", "securecore status"],
+      "failure_modes": "Chain integrity violation indicates tampering. Run `securecore forge --verify <name>` to check."
+    }
+  },
+  "reaper": {
+    "label": "Reaper",
+    "category": "Control",
+    "tier1": {
+      "what": "The Reaper is the autonomous containment executor. It watches agent decisions and blocks attackers via Windows Firewall.",
+      "when": "The Reaper fires when the consensus gate scores above the confidence threshold."
+    },
+    "tier2": {
+      "concept": "The Reaper uses a 3-channel consensus gate: containment agent (0.40 weight), cognitive agent (0.35), and HID attestation (0.25). All three channels must agree above the minimum confidence threshold before action is taken. No single scorer has sole authority.",
+      "misunderstanding": "The Reaper does not make decisions. It executes validated recommendations from the containment agent, weighted by cognitive assessment and human activity signals."
+    },
+    "tier3": {
+      "how": "control/reaper.py subscribes to agent_decisions substrate. When containment agent emits shun_ip/lock_cell/preserve_evidence, Reaper builds consensus via _build_consensus(), validates against policy, and executes via control/shun.py (Windows Firewall netsh rules).",
+      "files": ["securecore/control/reaper.py", "securecore/control/shun.py"],
+      "commands": ["securecore reaper", "securecore reaper --pause", "securecore reaper --resume", "securecore reaper --shun <ip>"],
+      "env_vars": ["SECURECORE_FORGE_ENABLED"],
+      "failure_modes": "If Reaper is paused, no containment actions fire. If consensus is below threshold, action is skipped and logged."
+    }
+  },
+  "agents": {
+    "label": "Agents",
+    "category": "Architecture",
+    "tier1": {
+      "what": "Agents are read-only interpreters that consume substrate truth and emit decisions. They never mutate evidence.",
+      "when": "Agents run continuously, consuming new substrate records as they arrive."
+    },
+    "tier2": {
+      "concept": "There are 7 agents: watcher (scanner detection), profiler (behavioral analysis), escalation (signal synthesis), cognitive (12-anchor authenticity), chain_auditor (integrity verification), decoy_orchestrator (deception strategy), and containment (action recommendations). Each writes only to agent_decisions. Loggers log, agents infer.",
+      "misunderstanding": "Agents do not act. They recommend. The Reaper acts. The permission gate enforces this boundary."
+    },
+    "tier3": {
+      "how": "agents/base.py defines the Agent contract: consume() processes records, emit() writes to agent_decisions via SubstrateWriter, tick() runs periodically. Each agent is registered in app.py with explicit read/write permissions.",
+      "files": ["securecore/agents/base.py", "securecore/agents/watcher.py", "securecore/agents/cognitive.py"],
+      "commands": ["securecore status", "securecore tail agent_decisions"]
+    }
+  },
+  "permission_gate": {
+    "label": "Permission Gate",
+    "category": "Security",
+    "tier1": {
+      "what": "The permission gate enforces write authority on every substrate append. No write without identity, no identity without registration.",
+      "when": "Every substrate.append() call passes through the gate. Unauthorized writes are denied and logged."
+    },
+    "tier2": {
+      "concept": "Every autonomous component is registered in the CallerRegistry with a caller_id, HMAC signing key, and explicit allowed_writes list. When append() is called, the gate verifies: (1) caller is registered, (2) caller is authorized for this substrate, (3) HMAC signature is valid. Denied writes increment a counter and are logged.",
+      "misunderstanding": "The gate is not sprinkled across the codebase. ALL enforcement happens inside substrate.append(). One gate, one chokepoint, one place to audit."
+    },
+    "tier3": {
+      "how": "permissions/gate.py implements PermissionGate.check(). permissions/registry.py manages CallerEntry records. permissions/types.py provides SubstrateReader (no append) and SubstrateWriter (auto-signs with HMAC). app.py registers all callers at boot.",
+      "files": ["securecore/permissions/gate.py", "securecore/permissions/registry.py", "securecore/permissions/types.py"],
+      "commands": ["securecore agents", "securecore agents inspect <name>"]
+    }
+  },
+  "forge": {
+    "label": "Forge",
+    "category": "Architecture",
+    "tier1": {
+      "what": "Forge is the binary truth spine. It stores substrate records in a compact binary format with WAL crash recovery.",
+      "when": "Forge dual-writes alongside JSONL substrates when SECURECORE_FORGE_ENABLED=true."
+    },
+    "tier2": {
+      "concept": "Forge is not a replacement for substrates — it's the storage engine evolving underneath them. The substrate API stays the same; the backing changes from JSONL to binary. Forge records have magic bytes, SHA-256 checksums, and a rebuildable sidecar index.",
+      "misunderstanding": "Forge is not a separate truth layer. Substrates ARE the Forge once the backing changes. JSONL remains authoritative until cutover."
+    },
+    "tier3": {
+      "how": "forge/record.py defines the binary codec. forge/wal.py handles crash recovery. forge/writer.py is the single-writer append store. forge/pulse_writer.py buffers records in batches. forge/reader.py reads and verifies.",
+      "files": ["securecore/forge/record.py", "securecore/forge/writer.py", "securecore/forge/wal.py"],
+      "commands": ["securecore forge", "securecore forge --verify <substrate>", "securecore forge --substrate <name> --tail 10"],
+      "env_vars": ["SECURECORE_FORGE_ENABLED", "SECURECORE_FORGE_DIR", "SECURECORE_FORGE_STRICT"]
+    }
+  },
+  "mirror_cells": {
+    "label": "Mirror Cells",
+    "category": "Honeypot",
+    "tier1": {
+      "what": "Mirror cells track individual attackers. Each cell records every interaction with tamper-evident hash chains.",
+      "when": "A cell spawns when an attacker hits a trap endpoint. It escalates through 6 levels: OBSERVED → TRACKING → ENGAGED → LOCKED → TRAPPED → BURNING."
+    },
+    "tier2": {
+      "concept": "Each attacker gets a unique cell_id based on their fingerprint (IP + User-Agent + headers). The cell tracks paths probed, tools used, injection attempts, and timing patterns. At level 3 (LOCKED), the cell locks permanently and the Reaper fires.",
+      "misunderstanding": "Mirror cells don't contain the attacker in a sandbox. They record and classify. Containment is handled by the shun engine (firewall rules)."
+    },
+    "tier3": {
+      "how": "decoys/routes.py creates cells via _ensure_cell(). Cell state is tracked in-memory and recorded to the mirror substrate. Evidence for each cell is chained independently in the evidence substrate.",
+      "files": ["securecore/decoys/routes.py", "securecore/substrates/mirror.py", "securecore/substrates/evidence.py"],
+      "commands": ["securecore cells", "securecore cells --locked", "securecore cells --cell <id> --evidence"]
+    }
+  },
+  "cli": {
+    "label": "CLI Command Center",
+    "category": "Operator",
+    "tier1": {
+      "what": "The CLI is the operator surface. It reads truth from disk and controls the organism through the command bus.",
+      "when": "Use the CLI to monitor the organism, inspect cells, control the Reaper, and verify integrity."
+    },
+    "tier2": {
+      "concept": "Read commands (status, tail, cells, forge) read JSONL/binary files directly — they never boot a shadow organism. Control commands (reaper --pause, --shun) talk to the live organism through a file-backed control bus. Each CLI pane answers one question.",
+      "misunderstanding": "The CLI is not the organism. The organism runs independently. The CLI is a lens."
+    },
+    "tier3": {
+      "how": "cli/main.py routes commands. cli/common.py provides file-backed read helpers. control/command_bus.py provides the live control channel.",
+      "files": ["securecore/cli/main.py", "securecore/cli/common.py", "securecore/control/command_bus.py"],
+      "commands": ["securecore status", "securecore tail <target>", "securecore cells", "securecore reaper", "securecore forge", "securecore help"]
+    }
+  }
+}

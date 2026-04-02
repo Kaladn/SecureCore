@@ -25,7 +25,6 @@ import hashlib
 import json
 import os
 import threading
-import time
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import Iterator, Optional
@@ -129,6 +128,24 @@ class Substrate:
         self._last_hash = "GENESIS"
         self._lock = threading.Lock()
         self._subscribers: list = []
+        self._permission_gate = None
+        self._token_local = threading.local()
+        self._forge_writer = None
+        self._forge_failures = 0
+        self._forge_strict = os.getenv("SECURECORE_FORGE_STRICT", "false").lower() == "true"
+
+        if os.getenv("SECURECORE_FORGE_ENABLED", "false").lower() == "true":
+            forge_root = os.getenv("SECURECORE_FORGE_DIR", "")
+            if forge_root:
+                forge_base = Path(forge_root)
+            else:
+                forge_base = self._data_dir.parent / "forge"
+            try:
+                from securecore.forge.writer import ForgeWriter
+                self._forge_writer = ForgeWriter(forge_base / self.name)
+            except Exception:
+                if self._forge_strict:
+                    raise
 
         # Recover sequence and last hash from existing JSONL
         self._recover_state()
@@ -156,6 +173,26 @@ class Substrate:
             except json.JSONDecodeError:
                 pass
 
+    def set_permission_gate(self, gate) -> None:
+        """Set the permission gate. Called by the app factory after registration."""
+        self._permission_gate = gate
+
+    def set_active_token(self, token) -> None:
+        """Set a write token for the current thread's caller context.
+
+        When substrate-specific methods (record_request, record_evidence, etc.)
+        call self.append() internally, they don't have a write_token parameter.
+        A SubstrateWriter sets the active token before delegating to these methods,
+        so the gate can still verify the caller.
+
+        Uses thread-local storage to prevent concurrent callers from
+        overwriting each other's tokens.
+        """
+        self._token_local.active_token = token
+
+    def clear_active_token(self) -> None:
+        self._token_local.active_token = None
+
     def validate_payload(self, record_type: str, payload: dict) -> None:
         """Override in subclasses to enforce schema.
 
@@ -168,15 +205,38 @@ class Substrate:
         record_type: str,
         payload: dict,
         cell_id: str = "",
+        write_token=None,
     ) -> SubstrateRecord:
         """Append a record to this substrate.
 
         Thread-safe. Writes to JSONL first (truth), then notifies subscribers.
-        Returns the created record.
+
+        If a permission gate is set, write_token is REQUIRED and must pass
+        all gate checks (registered, ACL, valid signature). Denied writes
+        raise PermissionDenied.
         """
+        # Permission enforcement FIRST — the single chokepoint
+        # Deny before schema validation so unauthorized callers
+        # get "denied", not "invalid payload"
+        verified_caller = ""
+        if self._permission_gate is not None:
+            effective_token = write_token or getattr(self._token_local, "active_token", None)
+            if effective_token is None:
+                from securecore.permissions.gate import PermissionDenied
+                raise PermissionDenied("anonymous", self.name, "no write_token provided")
+            # Pass actual payload for binding verification when using direct tokens.
+            # Active tokens from delegated calls can't bind payload (built internally).
+            actual_payload = payload if write_token is not None else None
+            verified_caller = self._permission_gate.check(self.name, effective_token, actual_payload)
+
         self.validate_payload(record_type, payload)
 
         with self._lock:
+            # Embed verified caller identity in payload (immutable proof)
+            if verified_caller:
+                payload = dict(payload)
+                payload["_caller_id"] = verified_caller
+
             record = SubstrateRecord(
                 substrate=self.name,
                 sequence=self._sequence,
@@ -189,6 +249,14 @@ class Substrate:
             # Write to JSONL (primary truth store)
             with open(self._jsonl_path, "a", encoding="utf-8") as f:
                 f.write(record.to_json() + "\n")
+
+            if self._forge_writer is not None:
+                try:
+                    self._forge_writer.append_dict(record.to_dict())
+                except Exception:
+                    self._forge_failures += 1
+                    if self._forge_strict:
+                        raise
 
             self._sequence += 1
             self._last_hash = record.chain_hash
@@ -324,3 +392,16 @@ class Substrate:
     @property
     def jsonl_path(self) -> str:
         return str(self._jsonl_path)
+
+    def forge_status(self) -> dict:
+        if self._forge_writer is None:
+            return {
+                "enabled": False,
+                "failures": self._forge_failures,
+            }
+        stats = self._forge_writer.stats()
+        stats.update({
+            "enabled": True,
+            "failures": self._forge_failures,
+        })
+        return stats

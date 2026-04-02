@@ -41,6 +41,58 @@ class TestHIDSubstrate(unittest.TestCase):
         self.assertTrue(record.payload["camera_active"])
         self.assertFalse(record.payload["mic_active"])
 
+    def test_record_screen_capture(self):
+        record = self.hid.record_screen_capture(
+            grid=[[0, 1], [2, 11]],
+            frame_id=7,
+            capture_region="full",
+            screen_changed=True,
+            change_ratio=0.25,
+        )
+        self.assertEqual(record.record_type, "screen_capture")
+        self.assertEqual(record.payload["frame_id"], 7)
+        self.assertEqual(record.payload["grid"], [[0, 1], [2, 9]])
+        self.assertTrue(record.payload["screen_changed"])
+        self.assertEqual(record.payload["grid_rows"], 2)
+        self.assertEqual(record.payload["grid_cols"], 2)
+
+    def test_record_camera_frame(self):
+        record = self.hid.record_camera_frame(
+            face_detected=True,
+            attention_on_screen=True,
+            attention_direction="center",
+            distance_estimate=42.5,
+        )
+        self.assertEqual(record.record_type, "camera_frame")
+        self.assertTrue(record.payload["face_detected"])
+        self.assertTrue(record.payload["attention_on_screen"])
+        self.assertEqual(record.payload["attention_direction"], "center")
+
+    def test_record_audio_level(self):
+        record = self.hid.record_audio_level(
+            mic_active=True,
+            level_db=-18.5,
+            voice_detected=True,
+            device_id="mic-1",
+        )
+        self.assertEqual(record.record_type, "audio_level")
+        self.assertTrue(record.payload["mic_active"])
+        self.assertTrue(record.payload["voice_detected"])
+        self.assertEqual(record.payload["device_id"], "mic-1")
+
+    def test_record_activity_burst(self):
+        record = self.hid.record_activity_burst(
+            keyboard_events=8,
+            mouse_clicks=2,
+            movement_detected=True,
+            screen_changing=True,
+            voice_detected=False,
+            foreground_app="SecureCore",
+        )
+        self.assertEqual(record.record_type, "activity_burst")
+        self.assertEqual(record.payload["keyboard_events"], 8)
+        self.assertTrue(record.payload["screen_changing"])
+
     def test_validation_requires_epoch_ns(self):
         with self.assertRaises(ValueError):
             self.hid.validate_payload("keyboard_activity", {"key_event_count": 1})
@@ -68,6 +120,35 @@ class TestHIDSubstrate(unittest.TestCase):
         self.assertEqual(att["keyboard_events"], 20)
         self.assertEqual(att["mouse_clicks"], 3)
         self.assertTrue(att["movement_detected"])
+
+    def test_attestation_with_visual_audio_signals(self):
+        self.hid.record_session_state(session_locked=False, idle_seconds=3.0, foreground_app="console")
+        self.hid.record_screen_capture(
+            grid=[[1, 2], [3, 4]],
+            capture_region="full",
+            screen_changed=True,
+            change_ratio=0.4,
+        )
+        self.hid.record_camera_frame(
+            face_detected=True,
+            attention_on_screen=True,
+            attention_direction="center",
+        )
+        self.hid.record_audio_level(
+            mic_active=True,
+            level_db=-12.0,
+            voice_detected=True,
+        )
+
+        att = self.hid.get_recent_attestation(window_seconds=300.0)
+        self.assertTrue(att["available"])
+        self.assertTrue(att["active_human"])
+        self.assertTrue(att["screen_changing"])
+        self.assertTrue(att["face_detected"])
+        self.assertTrue(att["attention_on_screen"])
+        self.assertTrue(att["voice_detected"])
+        self.assertEqual(att["attention_direction"], "center")
+        self.assertGreater(att["confidence"], 0.6)
 
     def test_attestation_locked_session(self):
         self.hid.record_keyboard_activity(key_event_count=10)
