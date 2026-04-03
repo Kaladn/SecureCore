@@ -60,6 +60,13 @@ from securecore.permissions.registry import CallerRegistry
 from securecore.permissions.gate import PermissionGate
 from securecore.permissions.types import SubstrateWriter, SubstrateReader
 
+# Chat / LLM
+from securecore.llm.broker import LLMBroker
+from securecore.help.bot import HelpBot, _load_system_prompt
+from securecore.help.config import load_help_config
+from securecore.chat.ledger import ChatLedger
+from securecore.chat.executor import ChatExecutor, OPERATIONS_SYSTEM_PROMPT, BUILD_SYSTEM_PROMPT
+
 # Logging
 from securecore.log_streams.streams import LogRouter
 
@@ -67,6 +74,7 @@ from securecore.log_streams.streams import LogRouter
 from securecore.routes.health import health_bp
 from securecore.routes.auth import auth_bp
 from securecore.routes.events import events_bp
+from securecore.routes.chat import chat_bp
 from securecore.control.routes import control_bp, init_control_routes
 
 logger = logging.getLogger("securecore")
@@ -168,6 +176,27 @@ def create_app() -> Flask:
         allowed_write=["operator"],
         allowed_read=[],
     )
+    llm_help_entry = registry.register(
+        caller_id="llm:help",
+        caller_type="llm",
+        module_path="securecore.help.bot",
+        allowed_write=[],
+        allowed_read=["help_corpus", "code_index", "runtime_snapshot"],
+    )
+    llm_operations_entry = registry.register(
+        caller_id="llm:operations",
+        caller_type="llm",
+        module_path="securecore.chat.operations",
+        allowed_write=[],
+        allowed_read=["chat_history", "runtime_snapshot"],
+    )
+    llm_build_entry = registry.register(
+        caller_id="llm:build",
+        caller_type="llm",
+        module_path="securecore.chat.build",
+        allowed_write=[],
+        allowed_read=["chat_history", "build_workspace"],
+    )
 
     # Set the gate on every substrate
     for sub in substrates.values():
@@ -239,11 +268,45 @@ def create_app() -> Flask:
     ticker.start()
 
     # ============================================================
+    # LLM / CHAT - local model roles and chat executor
+    # ============================================================
+    help_config = load_help_config()
+    llm_broker = LLMBroker(
+        ollama_host=help_config["ollama_host"],
+        log_router=log_router,
+    )
+    llm_broker.register_role(
+        role_name="help",
+        caller_entry=llm_help_entry,
+        model=help_config["local_model"],
+        system_prompt=_load_system_prompt(help_config),
+        max_context_chars=help_config["max_context_chars"],
+    )
+    llm_broker.register_role(
+        role_name="operations",
+        caller_entry=llm_operations_entry,
+        model=help_config["local_model"],
+        system_prompt=OPERATIONS_SYSTEM_PROMPT,
+        max_context_chars=help_config["max_context_chars"],
+    )
+    llm_broker.register_role(
+        role_name="build",
+        caller_entry=llm_build_entry,
+        model=help_config["local_model"],
+        system_prompt=BUILD_SYSTEM_PROMPT,
+        max_context_chars=help_config["max_context_chars"],
+    )
+    help_bot = HelpBot(llm_broker, role_name="help")
+    chat_ledger = ChatLedger(Path(data_dir) / "chat" / "ledger.jsonl")
+    chat_executor = ChatExecutor(chat_ledger, help_bot, llm_broker)
+
+    # ============================================================
     # ROUTES - real and trap
     # ============================================================
     app.register_blueprint(health_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(events_bp)
+    app.register_blueprint(chat_bp)
 
     # ============================================================
     # REAPER - autonomous containment executor
@@ -299,6 +362,10 @@ def create_app() -> Flask:
     app.control_bus = control_bus
     app.registry = registry
     app.permission_gate = gate
+    app.llm_broker = llm_broker
+    app.help_bot = help_bot
+    app.chat_ledger = chat_ledger
+    app.chat_executor = chat_executor
 
     with app.app_context():
         from securecore.core import models  # noqa: F401

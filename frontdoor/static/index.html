@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SecureCore Front Door</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="login-panel" id="login-panel">
+      <div class="brand">
+        <p class="eyebrow">SecureCore</p>
+        <h1>One model. One surface. One authority.</h1>
+        <p class="summary">Sign in, choose a mode, and drive the organism through the bot.</p>
+      </div>
+      <form id="login-form" class="login-form">
+        <label>
+          <span>Username</span>
+          <input type="text" id="username" autocomplete="username" required>
+        </label>
+        <label>
+          <span>Password</span>
+          <input type="password" id="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit" id="login-button">Enter SecureCore</button>
+        <p class="form-error" id="login-error"></p>
+      </form>
+    </section>
+
+    <section class="chat-shell hidden" id="chat-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">SecureCore</p>
+          <h1>Chat Control Center</h1>
+        </div>
+        <div class="status-cluster">
+          <div class="status-box">
+            <span class="status-label">Trust</span>
+            <strong class="trust trust-full" id="trust-state">FULL</strong>
+          </div>
+          <div class="status-box">
+            <span class="status-label">Inference</span>
+            <strong id="inference-name">Local Ollama API</strong>
+          </div>
+          <div class="status-box">
+            <span class="status-label">Branch</span>
+            <strong id="branch-name">main</strong>
+          </div>
+          <button class="ghost-button" id="logout-button" type="button">Logout</button>
+        </div>
+      </header>
+
+      <section class="modebar" aria-label="Chat mode">
+        <label class="mode-pill">
+          <input type="radio" name="mode" value="support" checked>
+          <span>Support</span>
+        </label>
+        <label class="mode-pill">
+          <input type="radio" name="mode" value="operations">
+          <span>Operations</span>
+        </label>
+        <label class="mode-pill">
+          <input type="radio" name="mode" value="build">
+          <span>Build</span>
+        </label>
+        <div class="mode-meta">
+          <span id="mode-summary">Grounded help lane</span>
+          <span id="inference-summary">temp 0.0 • max 2048</span>
+        </div>
+      </section>
+
+      <section class="stream" id="message-stream" aria-live="polite">
+        <div class="empty-state" id="empty-state">
+          <p>Start a conversation. Paragraphs become blocks you can annotate, cite, and continue from.</p>
+        </div>
+      </section>
+
+      <footer class="composer">
+        <textarea id="message-input" rows="4" maxlength="100000" placeholder="Speak to SecureCore."></textarea>
+        <div class="composer-row">
+          <div class="composer-status">
+            <span id="conversation-label">No conversation yet</span>
+            <span id="identity-label">JWT identity required</span>
+          </div>
+          <button id="send-button" type="button">Send</button>
+        </div>
+      </footer>
+    </section>
+  </main>
+
+  <div class="block-menu hidden" id="block-menu" role="dialog" aria-modal="false">
+    <p class="block-menu-label" id="block-menu-label">Block actions</p>
+    <button type="button" id="block-note-button">Add note</button>
+    <button type="button" id="block-cite-button">Add citation</button>
+    <button type="button" id="block-continue-button">Continue chat</button>
+  </div>
+
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

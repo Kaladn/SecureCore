@@ -90,7 +90,10 @@ class Agent:
         self._running = False
         self._consumed_count = 0
         self._emitted_count = 0
-        self._lock = threading.Lock()
+        # Some agents watch `agent_decisions` and may emit follow-up decisions while
+        # processing a prior decision. A re-entrant lock keeps that local recursion
+        # from deadlocking the request path.
+        self._lock = threading.RLock()
         self._logger = logging.getLogger(f"agent.{self.name}")
 
     def consume(self, record: SubstrateRecord) -> None:

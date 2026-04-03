@@ -10,6 +10,12 @@ def load_help_config() -> dict:
     repo_root = Path(__file__).resolve().parent.parent.parent
     securecore_root = repo_root / "securecore"
     help_root = Path(os.getenv("SECURECORE_HELP_DIR", securecore_root / "data" / "help"))
+    local_model = (
+        os.getenv("SECURECORE_LOCAL_MODEL")
+        or os.getenv("SECURECORE_OLLAMA_MODEL")
+        or os.getenv("SECURECORE_HELP_MODEL")
+        or "auto"
+    )
 
     return {
         "repo_root": repo_root,
@@ -60,7 +66,7 @@ def load_help_config() -> dict:
             ".yaml",
             ".yml",
         },
-        "help_model": os.getenv("SECURECORE_HELP_MODEL", "gpt-oss:20b"),
+        "local_model": local_model,
         "ollama_host": os.getenv("SECURECORE_OLLAMA_HOST", "http://127.0.0.1:11434"),
         "max_context_chars": int(os.getenv("SECURECORE_HELP_MAX_CONTEXT_CHARS", "24000")),
         "default_tier": int(os.getenv("SECURECORE_HELP_DEFAULT_TIER", "1")),

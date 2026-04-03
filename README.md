@@ -19,6 +19,108 @@ SecureCore is a localhost-only defensive security organism. This public repo sta
 - Agents never mutate evidence
 - Loggers log, agents infer
 
+## Operator Surface Direction
+SecureCore is moving toward one primary operator surface instead of many competing control planes.
+
+- One Rust front door serving the chat control center
+- One local Ollama-backed model path
+- Three radio-button modes: `Support`, `Operations`, `Build`
+- One trust-gated authority path for all mutations
+- Read-only satellites only: popup displays and CLI instruments may observe, but they do not get private mutation lanes
+
+Mode selection changes context, retrieval, contract, and allowed requests. It does not change what the system trusts.
+
+### Current lock
+- `Grounded` is a reserved preset slot, not a fourth visible mode
+- block cite and block note live beside messages, not as separate messages
+- continue chat is a branch operation
+- settings come last, after the other systems are proven
+- the Rust layer is a front door, not a second brain
+
+### Mode doctrine
+- `Support`
+  - grounded help, explanation, citations, operator-safe answers
+- `Operations`
+  - runtime inspection, status, live cells, containment review, trusted operator commands
+- `Build`
+  - drafting, code assistance, continue flows, tool maker, approval workflows
+
+The current runtime already contains the backbone this will grow around:
+
+- `securecore/help/` for grounded support behavior
+- `securecore/control/` for local control transport and runtime command handling
+- `securecore/permissions/` for registry and gating
+- `securecore/llm/` for local model access and role-specific contexts
+- `securecore/substrates/` for append-only truth
+
+## Planned Chat Spine
+The future chat system is not a separate toy layered beside the organism. It is intended to become a first-class SecureCore subsystem built around the same truth and authority rules as the rest of the runtime.
+
+### Chat memory
+Chat memory is planned as a shared append-only spine carrying:
+
+- conversations
+- messages
+- blocks
+- branches
+- citations
+- notes
+- continue state
+- artifact references
+
+The design rule is:
+
+```text
+One ledger.
+One truth.
+Blocks are indexed projections, not competing storage authorities.
+```
+
+### Required chat capabilities
+- block-level citations
+- block-level annotations
+- continue from item
+- continue from code
+- branch-aware history
+- response grounding citations
+- shared retrieval and memory rollups later
+
+### Tool Maker placement
+Tool Maker belongs inside `Build` mode. It is not a separate UI.
+
+Its governed lifecycle is expected to be:
+
+```text
+describe
+-> draft proposal
+-> validate
+-> sandbox test
+-> approve
+-> activate
+```
+
+## Roadmap To V1
+The current operator-platform wrap is expected to move in this order:
+
+1. Chat surface
+   - Rust front door for chat/static
+   - Python chat backend
+   - block cite, block note, continue chat
+2. Chat memory + citations
+   - memory spine
+   - manual and grounding citations
+   - retrieval across conversations
+3. 6-1-6 mapping + data lake
+   - Rust compute for mapping
+   - lake ingestion from chat memory + substrates
+4. Grounded chat + lexicon
+   - fuller retrieval grounding
+   - SecureCore lexicon rebuild
+5. Settings menu
+   - full system settings surface after the rest is proven
+
+See [docs/architecture/Chat Control Center Architecture.md](docs/architecture/Chat%20Control%20Center%20Architecture.md) for the fuller doctrine document.
+
 ## Repo layout
 - `securecore/` runtime organism
 - `tests/` runtime and support tests
@@ -56,4 +158,4 @@ This section is a living execution ledger. Each item starts as a forward-looking
 - Pending: replace hot-path synchronous write pressure with a safer writer pattern so truth capture stays deterministic under stress without blocking request handling.
 - Pending: wire a real HID collector behind the existing HID substrate so human-attestation signals come from hardware activity rather than synthetic records alone.
 - Pending: lock logging and write-path visibility before branching the operator command center into active UI work.
-- Pending: harden the operator surface away from browser dependence and toward the long-term native console path only after runtime write integrity is proven.
+- Pending: converge the operator surface into one trust-gated chat control center with read-only satellites only after runtime write integrity is proven.

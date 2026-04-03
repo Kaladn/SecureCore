@@ -18,9 +18,9 @@ logger = logging.getLogger("llm.ollama")
 class OllamaAdapter:
     """Minimal ollama HTTP adapter using only stdlib."""
 
-    def __init__(self, host: str = "http://127.0.0.1:11434", model: str = "gpt-oss:20b"):
+    def __init__(self, host: str = "http://127.0.0.1:11434", model: str = "auto"):
         self._host = host.rstrip("/")
-        self._model = model
+        self._model = (model or "auto").strip() or "auto"
 
     @property
     def model(self) -> str:
@@ -38,8 +38,13 @@ class OllamaAdapter:
 
         Returns the response text, or None on failure.
         """
+        resolved_model = self._resolve_model_name()
+        if not resolved_model:
+            logger.warning("ollama has no local model available")
+            return None
+
         payload = {
-            "model": self._model,
+            "model": resolved_model,
             "prompt": prompt,
             "stream": False,
             "options": {
@@ -71,11 +76,12 @@ class OllamaAdapter:
     def is_available(self) -> bool:
         """Check if ollama is reachable and the model is loaded."""
         try:
-            req = urllib.request.Request(f"{self._host}/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-                models = [m.get("name", "") for m in body.get("models", [])]
-                return self._model in models or any(self._model.split(":")[0] in m for m in models)
+            models = self._fetch_models()
+            if not models:
+                return False
+            if self._model == "auto":
+                return True
+            return any(self._model_matches(m.get("name", "")) for m in models)
         except Exception:
             return False
 
@@ -86,21 +92,57 @@ class OllamaAdapter:
         This proves the exact model weights that produced a response.
         """
         try:
-            req = urllib.request.Request(f"{self._host}/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-                for m in body.get("models", []):
-                    name = m.get("name", "")
-                    if name == self._model or self._model.split(":")[0] in name:
-                        return m.get("digest", "")
+            models = self._fetch_models()
+            resolved_model = self._resolve_model_name(models=models)
+            if not resolved_model:
+                return ""
+            for model in models:
+                name = model.get("name", "")
+                if name == resolved_model:
+                    return model.get("digest", "")
+            if self._model != "auto":
+                for model in models:
+                    name = model.get("name", "")
+                    if self._model_matches(name):
+                        return model.get("digest", "")
         except Exception:
             pass
         return ""
 
     def status(self) -> dict:
+        models = self._fetch_models()
         return {
             "host": self._host,
             "model": self._model,
-            "available": self.is_available(),
+            "resolved_model": self._resolve_model_name(models=models),
+            "available": bool(models) if self._model == "auto" else any(
+                self._model_matches(model.get("name", "")) for model in models
+            ),
             "digest": self.model_digest(),
         }
+
+    def _fetch_models(self) -> list[dict]:
+        req = urllib.request.Request(f"{self._host}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            return list(body.get("models", []))
+
+    def _resolve_model_name(self, *, models: list[dict] | None = None) -> str:
+        if self._model != "auto":
+            return self._model
+
+        models = models if models is not None else self._fetch_models()
+        for model in models:
+            name = str(model.get("name", "")).strip()
+            if name:
+                return name
+        return ""
+
+    def _model_matches(self, candidate: str) -> bool:
+        if candidate == self._model:
+            return True
+        if self._model == "auto":
+            return bool(candidate)
+        configured_base = self._model.split(":")[0]
+        candidate_base = candidate.split(":")[0]
+        return configured_base == candidate_base

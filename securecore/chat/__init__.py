@@ -1,0 +1,2 @@
+"""SecureCore chat backend primitives."""
+
